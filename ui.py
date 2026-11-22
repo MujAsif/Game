@@ -1,6 +1,6 @@
 """
-UI — Drawing toolkit: text rendering, gradients, panels, pills, glows, shapes, and Button widget.
-All drawing primitives for the game live here. Surfaces are cached for performance.
+UI — Drawing toolkit: text, gradients, panels, pills, glows, shapes, Button.
+FIX: removed the harsh white top-highlight lines from pills/panels.
 """
 import pygame
 import math
@@ -8,22 +8,23 @@ import config
 from config import (INK, PANEL_BG, PANEL_BORDER, WHITE, MUTED, SUBTLE,
                     GOLD, GOLD_SOFT, MINT, CORAL, BLUE)
 
-_SURFACE_CACHE = {}   # shared cache for gradients, panels, hearts, stars, etc.
+_SURFACE_CACHE = {}
 
-# ── Math helpers ──────────────────────────────────────────────────
+
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
+
 def lerp(a, b, t):
     return a + (b - a) * t
+
 
 def blend_color(c1, c2, t):
     t = clamp(t, 0.0, 1.0)
     return tuple(int(lerp(c1[i], c2[i], t)) for i in range(3))
 
-# ── Text rendering ────────────────────────────────────────────────
+
 def draw_text(surface, text, font, color, pos, center=False, right=False, shadow=False, valign="top"):
-    """Render text with alignment. valign='middle' centres left-aligned text vertically."""
     img = font.render(str(text), True, color)
     rect = img.get_rect()
     if center:
@@ -41,8 +42,8 @@ def draw_text(surface, text, font, color, pos, center=False, right=False, shadow
     surface.blit(img, rect)
     return rect
 
+
 def wrap_text(text, font, max_width):
-    """Word-wrap text to fit within max_width pixels."""
     lines, line = [], ""
     for word in str(text).split():
         test = word if not line else line + " " + word
@@ -56,23 +57,21 @@ def wrap_text(text, font, max_width):
         lines.append(line)
     return lines or [""]
 
-# ── Overlay helper ────────────────────────────────────────────────
+
 def veil(alpha):
-    """Full-screen dimming overlay used behind menus and the question panel."""
     s = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
     s.fill((6, 11, 20, alpha))
     return s
 
-# ── Shared shadow builder ─────────────────────────────────────────
+
 def _shadow_box(w, h, radius, layers):
-    """Build a soft multi-layer drop shadow surface (shared by pills, panels, buttons)."""
     pad = 14
     box = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
     for ox, oy, a, r in layers:
         pygame.draw.rect(box, (3, 7, 15, a), (pad + ox, pad + oy, w, h), border_radius=r)
     return box, pad
 
-# ── Gradient surfaces ─────────────────────────────────────────────
+
 def get_gradient_surface(size, top, bottom, radius=0):
     w, h = max(1, int(size[0])), max(1, int(size[1]))
     key = ("grad", w, h, tuple(top[:3]), tuple(bottom[:3]), radius)
@@ -92,15 +91,14 @@ def get_gradient_surface(size, top, bottom, radius=0):
     _SURFACE_CACHE[key] = grad
     return grad
 
+
 def gradient_rect(surface, rect, top, bottom, radius=0):
-    """Fill a rectangle with a vertical gradient."""
     rect = pygame.Rect(rect)
     if rect.w > 0 and rect.h > 0:
         surface.blit(get_gradient_surface((rect.w, rect.h), top, bottom, radius), rect.topleft)
 
-# ── Panel widgets ─────────────────────────────────────────────────
+
 def draw_pill(surface, rect, fill=(16, 26, 42, 224), border=(145, 175, 200, 75), shadow=True):
-    """Draw a pill-shaped (stadium) panel."""
     rect = pygame.Rect(rect)
     radius = rect.h // 2
     key = ("pill", rect.w, rect.h, tuple(fill), tuple(border), shadow)
@@ -114,9 +112,6 @@ def draw_pill(surface, rect, fill=(16, 26, 42, 224), border=(145, 175, 200, 75),
         inner = pygame.Rect(pad, pad, rect.w, rect.h)
         pygame.draw.rect(box, fill, inner, border_radius=radius)
         pygame.draw.rect(box, border, inner, 1, border_radius=radius)
-        if rect.w > radius * 2:
-            pygame.draw.line(box, (255, 255, 255, 36),
-                             (inner.x + radius, inner.y + 1), (inner.right - radius, inner.y + 1), 1)
         if len(_SURFACE_CACHE) > 260:
             _SURFACE_CACHE.clear()
         cached = (box, pad)
@@ -124,8 +119,8 @@ def draw_pill(surface, rect, fill=(16, 26, 42, 224), border=(145, 175, 200, 75),
     box, pad = cached
     surface.blit(box, (rect.x - pad, rect.y - pad))
 
+
 def panel(surface, rect, fill=PANEL_BG, border=PANEL_BORDER, radius=20, shadow=True):
-    """Draw a rounded rectangular panel with optional drop shadow."""
     rect = pygame.Rect(rect)
     key = ("panel", rect.w, rect.h, tuple(fill), tuple(border), radius, shadow)
     cached = _SURFACE_CACHE.get(key)
@@ -138,9 +133,6 @@ def panel(surface, rect, fill=PANEL_BG, border=PANEL_BORDER, radius=20, shadow=T
         inner = pygame.Rect(pad, pad, rect.w, rect.h)
         pygame.draw.rect(box, fill, inner, border_radius=radius)
         pygame.draw.rect(box, border, inner, 1, border_radius=radius)
-        if rect.w > radius * 2 + 4:
-            pygame.draw.line(box, (255, 255, 255, 38),
-                             (inner.x + radius, inner.y + 1), (inner.right - radius, inner.y + 1), 1)
         if len(_SURFACE_CACHE) > 260:
             _SURFACE_CACHE.clear()
         cached = (box, pad)
@@ -148,9 +140,8 @@ def panel(surface, rect, fill=PANEL_BG, border=PANEL_BORDER, radius=20, shadow=T
     box, pad = cached
     surface.blit(box, (rect.x - pad, rect.y - pad))
 
-# ── Decorative shapes ─────────────────────────────────────────────
+
 def get_radial_glow(radius, color, max_alpha=46, rings=5):
-    """Soft radial gradient disc for halos and beacon glows."""
     key = ("glow", int(radius), tuple(color[:3]), int(max_alpha), rings)
     cached = _SURFACE_CACHE.get(key)
     if cached is not None:
@@ -164,8 +155,8 @@ def get_radial_glow(radius, color, max_alpha=46, rings=5):
     _SURFACE_CACHE[key] = surf
     return surf
 
+
 def get_smooth_heart(size, color, filled=True):
-    """Anti-aliased heart icon (used for the HP HUD)."""
     key = ("heart", int(size), tuple(color[:3]), filled)
     cached = _SURFACE_CACHE.get(key)
     if cached is not None:
@@ -196,8 +187,8 @@ def get_smooth_heart(size, color, filled=True):
     _SURFACE_CACHE[key] = final
     return final
 
+
 def get_smooth_star(size, color):
-    """Anti-aliased 8-pointed star icon (used for the score HUD)."""
     key = ("star", int(size), tuple(color[:3]))
     cached = _SURFACE_CACHE.get(key)
     if cached is not None:
@@ -215,10 +206,10 @@ def get_smooth_star(size, color):
     _SURFACE_CACHE[key] = final
     return final
 
-# ── Button widget ─────────────────────────────────────────────────
+
 class Button:
     """Interactive button with hover lift and press animation."""
-    def __init__(self, key, rect, label, action, accent=GOLD):  # ★ Fixed: added missing double underscores
+    def __init__(self, key, rect, label, action, accent=GOLD):
         self.key = key
         self.rect = pygame.Rect(rect)
         self.label = label
@@ -242,7 +233,4 @@ class Button:
         border = blend_color((92, 120, 148), self.accent, self.hover * 0.85)
         pygame.draw.rect(surface, fill, rect, border_radius=radius)
         pygame.draw.rect(surface, border, rect, 2 if self.hover > 0.2 else 1, border_radius=radius)
-        if rect.w > radius * 2:
-            pygame.draw.line(surface, (255, 255, 255, int(40 * self.hover)),
-                             (rect.x + radius, rect.y + 2), (rect.right - radius, rect.y + 2), 1)
         draw_text(surface, self.label, config.fonts.SMALL, WHITE, rect.center, center=True, shadow=True)

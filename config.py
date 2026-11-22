@@ -1,7 +1,5 @@
 """
 CONFIG — Game constants, physics tuning, color palette, and global pygame objects.
-Edit tuning values here. Global surfaces (screen, canvas, world) and fonts are
-initialized by main.py.
 """
 
 # ── Display ──────────────────────────────────────────────────────
@@ -9,20 +7,23 @@ WIDTH, HEIGHT = 1100, 650
 FPS = 60
 GROUND_Y = 544
 
+# ── Tilemap ──────────────────────────────────────────────────────
+TILE = 40
+SKY_ROWS = 5          # extra empty sky rows added above every level
+
 # ── Platformer physics ───────────────────────────────────────────
 GRAVITY = 0.78
 MAX_FALL_SPEED = 16.5
-JUMP_SPEED = -14.8        # max jump ≈ 140px
+JUMP_SPEED = -14.8        # max jump ≈ 140px  (3.5 tiles)
 MOVE_SPEED = 5.2
 ACCEL_GROUND = 0.90
 ACCEL_AIR = 0.60
 FRICTION_GROUND = 0.75
 FRICTION_AIR = 0.92
 
-# ── Staircase design ─────────────────────────────────────────────
-# Solved pillars descend to these step heights, forming a climbable staircase.
+# ── Staircase design (quiz pillars, unused by Mode 0) ────────────
 STEP_HEIGHTS = (60, 100, 140, 180, 220)
-PILLAR_BLOCK = 120        # extra wall height on unsolved pillars (unjumpable)
+PILLAR_BLOCK = 120
 PILLAR_W = 120
 
 # ── Gameplay ─────────────────────────────────────────────────────
@@ -32,8 +33,8 @@ QUESTIONS_PER_REGION = 5
 # ── Sprites ──────────────────────────────────────────────────────
 SPRITE_DIR = "assets/sprites"
 SPRITE_CACHE_DIR = "assets/sprites/_cache"
-PLAYER_SPRITE_H = 78      # on-screen height of the hero in gameplay
-SPRITE_SOURCE_FACING = 1  # direction the sheet art faces: 1 = right, -1 = left
+PLAYER_SPRITE_H = 78
+SPRITE_SOURCE_FACING = 1
 
 # ── Minimalist color palette ─────────────────────────────────────
 INK = (12, 19, 31)
@@ -57,7 +58,7 @@ class Fonts:
 
 
 fonts = Fonts()
-screen = None   # pygame display
-canvas = None   # off-screen draw buffer
-world = None    # game world buffer
-clock = None    # frame timer
+screen = None
+canvas = None
+world = None
+clock = None

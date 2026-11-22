@@ -1,9 +1,11 @@
 """
-DATA — Level definitions, themes, and question banks (for other modes).
+DATA — Five text-map levels, per-level themes, decoration tables,
+and question banks (for other modes).
+Maps: one char = one tile (TILE=40). Row 0 = first line of the string.
+5 sky rows are added above row 0 by the loader.
 """
 import random
 
-# ── Question Banks (Kept for Labyrinth/Storm modes if needed later) ────────
 LEVEL1_TOPIC = "Python Basics"
 LEVEL1_QUESTIONS = [
     {"q": "Which function prints text?", "options": ["print()", "echo()", "console.log()", "display()"], "answer": 0, "why": "print() outputs to console."},
@@ -20,146 +22,260 @@ LEVEL3_QUESTIONS = [
     {"q": "Which brackets create a list?", "options": ["{}", "[]", "()", "<>"], "answer": 1, "why": "[] defines lists."},
 ]
 
-# ── Platformer Levels ──────────────────────────────────────────────────
-LEVELS = [
-    # LEVEL 1: TWILIGHT SAKURA SHRINE
-    {
-        "name": "THE SAKURA SANCTUM",
-        "topic": "Twilight",
-        "width": 3260,
-        "start_x": 100,
-        "flag_x": 3120,
-        "platforms": [
-            {"x": 0, "y": 470, "w": 320, "h": 230},
-            {"x": 320, "y": 530, "w": 180, "h": 170},
-            {"x": 560, "y": 430, "w": 120, "h": 26},
-            {"x": 760, "y": 470, "w": 160, "h": 230},
-            {"x": 1000, "y": 400, "w": 140, "h": 300},
-            {"x": 1220, "y": 330, "w": 110, "h": 26},
-            {"x": 1400, "y": 300, "w": 160, "h": 400},
-            {"x": 1650, "y": 380, "w": 110, "h": 26},
-            {"x": 1830, "y": 450, "w": 150, "h": 250},
-            {"x": 2050, "y": 360, "w": 110, "h": 26},
-            {"x": 2230, "y": 300, "w": 150, "h": 400},
-            {"x": 2450, "y": 470, "w": 160, "h": 230},
-            {"x": 2680, "y": 430, "w": 220, "h": 270},
-            {"x": 2980, "y": 380, "w": 280, "h": 320},
-        ],
-        "props": [
-            {"type": "sakura_tree", "x": 90, "y": 470, "scale": 1.35},
-            {"type": "bush_pink", "x": 185, "y": 470},
-            {"type": "signpost", "x": 262, "y": 470},
-            {"type": "torii", "x": 410, "y": 530},
-            {"type": "lantern_post", "x": 800, "y": 470},
-            {"type": "rope_bridge", "x": 920, "y": 468, "x2": 1000, "y2": 398},
-            {"type": "stone_lantern", "x": 1035, "y": 400},
-            {"type": "sakura_tree", "x": 1105, "y": 400, "scale": 0.6},
-            {"type": "stone_lantern", "x": 1420, "y": 300},
-            {"type": "torii", "x": 1480, "y": 300, "scale": 1.1},
-            {"type": "lantern_post", "x": 1540, "y": 300},
-            {"type": "banner", "x": 1875, "y": 450},
-            {"type": "bush_pink", "x": 1945, "y": 450},
-            {"type": "banner", "x": 2270, "y": 300},
-            {"type": "bush_pink", "x": 2345, "y": 300},
-            {"type": "waterfall", "x": 2642, "y": 470},
-            {"type": "lantern_post", "x": 2712, "y": 430},
-            {"type": "shrine", "x": 2790, "y": 430},
-            {"type": "crate", "x": 2862, "y": 430},
-            {"type": "crate", "x": 2862, "y": 400},
-            {"type": "rope_bridge", "x": 2900, "y": 428, "x2": 2980, "y2": 378},
-            {"type": "stone_lantern", "x": 3010, "y": 380},
-            {"type": "banner", "x": 3052, "y": 380},
-            {"type": "fence", "x": 3170, "y": 380},
-            {"type": "lantern_post", "x": 3228, "y": 380},
-        ],
-        "coins": [
-            [585, 392], [620, 382], [655, 392],
-            [1245, 292], [1275, 282], [1305, 292],
-            [1675, 342], [1705, 332], [1735, 342],
-            [2075, 322], [2105, 312], [2135, 322],
-            [2320, 262], [2352, 262],
-            [2405, 352], [2432, 372], [2459, 392],
-            [2925, 402], [2950, 386], [2975, 372],
-        ],
-    },
-    # LEVEL 2: DESERT DUNES
-    {
-        "name": "THE EMBER CANOPY",
-        "topic": "Desert",
-        "width": 2800,
-        "start_x": 100,
-        "flag_x": 2600,
-        "platforms": [
-            {"x": 0, "y": 520, "w": 500, "h": 130}, {"x": 600, "y": 520, "w": 400, "h": 130},
-            {"x": 1100, "y": 520, "w": 300, "h": 130}, {"x": 1500, "y": 520, "w": 500, "h": 130},
-            {"x": 2100, "y": 520, "w": 700, "h": 130}, {"x": 520, "y": 450, "w": 60, "h": 20},
-            {"x": 1020, "y": 400, "w": 60, "h": 20}, {"x": 1420, "y": 350, "w": 60, "h": 20},
-            {"x": 2020, "y": 420, "w": 60, "h": 20}, {"x": 700, "y": 300, "w": 150, "h": 20},
-            {"x": 1200, "y": 250, "w": 120, "h": 20}, {"x": 1700, "y": 280, "w": 100, "h": 20},
-        ],
-        "props": [
-            {"type": "cactus", "x": 200, "y": 520}, {"type": "crate", "x": 300, "y": 520},
-            {"type": "crate", "x": 300, "y": 480}, {"type": "tree_acacia", "x": 800, "y": 520},
-            {"type": "skull", "x": 1250, "y": 520}, {"type": "cactus", "x": 1600, "y": 520},
-            {"type": "tree_acacia", "x": 2300, "y": 520}, {"type": "signpost", "x": 2500, "y": 520},
-        ],
-    },
-    # LEVEL 3: JUNGLE RUINS
-    {
-        "name": "THE VERDANT HOLLOW",
-        "topic": "Jungle",
-        "width": 3000,
-        "start_x": 100,
-        "flag_x": 2800,
-        "platforms": [
-            {"x": 0, "y": 540, "w": 600, "h": 110}, {"x": 700, "y": 540, "w": 400, "h": 110},
-            {"x": 1200, "y": 540, "w": 300, "h": 110}, {"x": 1600, "y": 540, "w": 500, "h": 110},
-            {"x": 2200, "y": 540, "w": 800, "h": 110}, {"x": 620, "y": 480, "w": 60, "h": 20},
-            {"x": 1120, "y": 420, "w": 60, "h": 20}, {"x": 1520, "y": 380, "w": 60, "h": 20},
-            {"x": 2120, "y": 450, "w": 60, "h": 20}, {"x": 800, "y": 350, "w": 150, "h": 20},
-            {"x": 1300, "y": 300, "w": 120, "h": 20}, {"x": 1800, "y": 250, "w": 100, "h": 20},
-            {"x": 2400, "y": 320, "w": 100, "h": 20},
-        ],
-        "props": [
-            {"type": "tree_leafy", "x": 200, "y": 540}, {"type": "tree_leafy", "x": 400, "y": 540},
-            {"type": "plant_tall", "x": 900, "y": 540}, {"type": "tree_leafy", "x": 1400, "y": 540},
-            {"type": "ruin_column", "x": 1700, "y": 540}, {"type": "tree_leafy", "x": 2500, "y": 540},
-            {"type": "signpost", "x": 2700, "y": 540},
-        ],
-    },
+LEVEL_LAYOUTS = [
+    # ── LEVEL 1 ──────────────────────────────────────────────────
+    """|                                    |
+|                                    |
+|                                 G  |
+|                             =======|
+|                        c    ||||||||
+|                      -----         |
+|                                    |
+|             MMMMM                  |
+|   K                                |
+|========                            |
+||||||||                            |
+||||||   ----                       |
+||||                                |
+|              -----                 |
+|                                    |
+|                      -----         |
+|                                    |
+|                               c    |
+|                             =======|
+|                             ||||||||
+|                             ||||||||
+|                      ======        |
+|                      ||||||        |
+|                                    |
+|               -----                |
+|                                    |
+|                                    |
+|        -----                       |
+|                                    |
+|  P                     E           |
+|==============^^^^^^================|
+||||||||||||||||||||||||||||||||||||||""",
+    # ── LEVEL 2 ──────────────────────────────────────────────────
+    """|                                    |
+|                                    |
+|                              G     |
+|                           =======  |
+|                           |||||||  |
+|                    -----           |
+|                F                   |
+|              c                     |
+|            -----                   |
+|                                    |
+|                                    |
+|   c     ---                        |
+|=======                             |
+|||||||                             |
+||||                                |
+||||                                |
+|||                                 |
+|                                    |
+|                -----               |
+|                                    |
+|                         K   ^^^    |
+|                        ============|
+|                 MMM      ||||||||||  |
+|                          ||||||||||  |
+|           -----          ||||||||||  |
+|                          ||||||||||  |
+|                          ||||||||||  |
+|                  -----             |
+|  c c c                             |
+|       ^^^                   E   P  |
+|==========~~~~~~~~~~~~~~~~==========|
+||||||||||~~~~~~~~~~~~~~~~||||||||||""",
+    # ── LEVEL 3 ──────────────────────────────────────────────────
+    """|                                    |
+|||||||||||||||||||||||            G |
+|||||||||||||||||||||||          ====|
+|       vvvvvvvvvvvvvv           ||||  |
+|                        =======     |
+|  K                                 |
+|======         -----                 |
+||||||          MMM                   |
+||||                                |
+|          -----                      |
+|                                    |
+|                                    |
+|                   -----             |
+|                                    |
+|    F                                |
+|                          -----      |
+|                                    |
+|                                    |
+|                                 ===|
+|                                 |||
+|                                 |||
+|                          ======    |
+|                                    |
+|                     E              |
+|                   =====            |
+|                                    |
+|          c                          |
+|        ----- ---                   |
+|                                    |
+|   P                    ^^^^        |
+|============~~~~~~~~~~==============|
+||||||||||||~~~~~~~~~~||||||||||||||""",
+    # ── LEVEL 4 ──────────────────────────────────────────────────
+    """|                                    |
+|        G                           |
+|      =====                         |
+|      |||||                         |
+|               -----                 |
+|                         K          |
+|                       =====        |
+|                       |||||        |
+|                                    |
+|                 -----               |
+||||||||||                  ||||||||||
+||||||||||                  ||||||||||
+|||||||||||-----             ||||||||||
+||||||||||                  ||||||||||
+||||||||||                  ||||||||||
+||||||||||         =========||||||||||
+||||||||||                  ||||||||||
+||||||||||                  ||||||||||
+||||||||||       MMM        ||||||||||
+||||||||||                  ||||||||||
+||||||||||   c              ||||||||||
+|||||||||| -----            ||||||||||
+||||||||||                  ||||||||||
+||||||||||                  ||||||||||
+||||||||||          -----   ||||||||||
+||||||||||                  ||||||||||
+||||||||||                  ||||||||||
+|||||||||| -----            ||||||||||
+||||||||||                  ||||||||||
+||||||||||   P   ^^^   E    ||||||||||
+||||||||||==================||||||||||
+||||||||||||||||||||||||||||||||||||||""",
+    # ── LEVEL 5 ──────────────────────────────────────────────────
+    """|                                    |
+|     G                              |
+|   =====                            |
+|   |||||     -----   -----          |
+|         MMM                        |
+|                               K    |
+|                             =====  |
+|                             |||||  |
+|                                    |
+|                ----- ----          |
+|                                    |
+|                                    |
+|        -----                       |
+|              F                      |
+|    K                                |
+|======                               |
+||||||                               |
+||||||            ^^^                 |
+||||||  -----    =====              |
+|                                    |
+|                                    |
+|                         -----      |
+|                                    |
+|                                    |
+|                                ====|
+|                    F           ||||
+|                                ||||
+|                          ----- ||||
+|                                ||||
+|  P             E               ||||
+|=========^^^^============~~~~~~~||||
+|||||||||||||||||||||||||~~~~~~~||||""",
 ]
 
-# ── Per-region color themes ────────────────────────────────────────────────
 LEVEL_THEMES = [
-    # 1. Twilight Sakura
-    {
-        "style": "sakura",
-        "sky_top": (18, 12, 40), "sky_bottom": (226, 92, 132),
-        "celestial": (255, 158, 196),
-        "ridge_far": (96, 52, 118), "ridge_mid": (70, 40, 96), "ridge_near": (46, 28, 72),
-        "ground_top": (74, 52, 98), "ground_bottom": (26, 18, 42),
-        "accent": (255, 138, 186), "mote": (255, 190, 220),
-        "prop_colors": {"wood": (122, 80, 68), "leaf": (240, 120, 175),
-                        "stone": (148, 128, 168), "grass": (226, 92, 164),
-                        "blossom": (255, 176, 214)},
-    },
-    # 2. Desert
-    {
-        "sky_top": (135, 206, 235), "sky_bottom": (255, 228, 181), "celestial": (255, 255, 200),
-        "ridge_far": (210, 180, 140), "ridge_mid": (190, 150, 100), "ridge_near": (160, 120, 80),
-        "ground_top": (210, 160, 90), "ground_bottom": (139, 69, 19),
-        "accent": (248, 164, 108), "mote": (255, 214, 164),
-        "prop_colors": {"sand": (230, 200, 150), "cactus": (60, 140, 60), "wood": (139, 69, 19), "bone": (240, 240, 220), "leaf": (40, 100, 40)},
-    },
-    # 3. Jungle
-    {
-        "sky_top": (15, 28, 46), "sky_bottom": (56, 98, 102), "celestial": (252, 232, 186),
-        "ridge_far": (37, 63, 82), "ridge_mid": (31, 74, 76), "ridge_near": (23, 55, 60),
-        "ground_top": (48, 86, 74), "ground_bottom": (18, 33, 38),
-        "accent": (98, 220, 170), "mote": (210, 245, 224),
-        "prop_colors": {"grass": (60, 140, 60), "leaf": (40, 100, 40), "wood": (100, 70, 50), "stone": (120, 120, 120)},
-    },
+    {"sky_top": (24, 12, 46), "sky_bottom": (232, 96, 140), "celestial": (255, 158, 196),
+     "ridge_far": (104, 58, 126), "ridge_mid": (76, 44, 102), "ridge_near": (50, 30, 78),
+     "ground_top": (92, 62, 116), "ground_bottom": (30, 20, 48),
+     "accent": (255, 138, 186), "mote": (255, 190, 220)},
+    {"sky_top": (16, 10, 40), "sky_bottom": (186, 84, 152), "celestial": (255, 170, 205),
+     "ridge_far": (88, 52, 122), "ridge_mid": (64, 40, 98), "ridge_near": (42, 26, 72),
+     "ground_top": (80, 54, 112), "ground_bottom": (26, 18, 46),
+     "accent": (196, 132, 255), "mote": (230, 190, 255)},
+    {"sky_top": (30, 10, 42), "sky_bottom": (240, 90, 122), "celestial": (255, 150, 172),
+     "ridge_far": (112, 50, 112), "ridge_mid": (84, 38, 90), "ridge_near": (56, 26, 66),
+     "ground_top": (98, 54, 106), "ground_bottom": (32, 18, 44),
+     "accent": (255, 110, 140), "mote": (255, 180, 192)},
+    {"sky_top": (13, 24, 48), "sky_bottom": (58, 96, 134), "celestial": (214, 238, 255),
+     "ridge_far": (38, 62, 98), "ridge_mid": (42, 82, 118), "ridge_near": (26, 54, 86),
+     "ground_top": (76, 118, 146), "ground_bottom": (20, 38, 62),
+     "accent": (124, 208, 252), "mote": (220, 242, 255)},
+    {"sky_top": (15, 28, 46), "sky_bottom": (56, 98, 102), "celestial": (252, 232, 186),
+     "ridge_far": (37, 63, 82), "ridge_mid": (31, 74, 76), "ridge_near": (23, 55, 60),
+     "ground_top": (48, 86, 74), "ground_bottom": (18, 33, 38),
+     "accent": (98, 220, 170), "mote": (210, 245, 224)},
 ]
+
+# Decoration tables. "row" = the row whose TOP edge the object's bottom sits on
+# (waterfall uses "row" as its TOP row instead). Cols = first column covered.
+DECORATIONS = {
+    0: [
+        {"type": "sign", "row": 30, "col": 5},
+        {"type": "fence", "row": 30, "col": 10, "width": 3},
+        {"type": "stone_lantern", "row": 9, "col": 6},
+        {"type": "bush", "row": 21, "col": 25, "width": 2},
+        {"type": "banner", "row": 18, "col": 34},
+        {"type": "torii", "row": 3, "col": 31, "width": 4},
+        {"type": "tree", "row": 30, "col": 22, "width": 4},
+        {"type": "shrine", "row": 30, "col": 30, "width": 4},
+    ],
+    1: [
+        {"type": "sign", "row": 30, "col": 31},
+        {"type": "fence", "row": 30, "col": 26, "width": 3},
+        {"type": "stone_lantern", "row": 30, "col": 0},
+        {"type": "stone_lantern", "row": 21, "col": 27},
+        {"type": "crate", "row": 21, "col": 33},
+        {"type": "bush", "row": 8, "col": 14, "width": 2},
+        {"type": "banner", "row": 3, "col": 33},
+        {"type": "torii", "row": 3, "col": 28, "width": 4},
+        {"type": "waterfall", "row": 22, "col": 24, "width": 2, "height": 4},
+    ],
+    2: [
+        {"type": "sign", "row": 30, "col": 6},
+        {"type": "fence", "row": 30, "col": 8, "width": 3},
+        {"type": "shrine", "row": 30, "col": 29, "width": 4},
+        {"type": "bush", "row": 30, "col": 34},
+        {"type": "hanging_lantern", "row": 4, "col": 25},
+        {"type": "banner", "row": 18, "col": 35},
+        {"type": "stone_lantern", "row": 6, "col": 4},
+        {"type": "torii", "row": 2, "col": 32, "width": 4},
+    ],
+    3: [
+        {"type": "sign", "row": 30, "col": 10},
+        {"type": "fence", "row": 30, "col": 24, "width": 3},
+        {"type": "hanging_lantern", "row": 27, "col": 10},
+        {"type": "bush", "row": 21, "col": 13, "width": 2},
+        {"type": "banner", "row": 15, "col": 26},
+        {"type": "waterfall", "row": 10, "col": 25, "width": 2, "height": 4},
+        {"type": "stone_lantern", "row": 6, "col": 27},
+        {"type": "torii", "row": 2, "col": 6, "width": 4},
+    ],
+    4: [
+        {"type": "sign", "row": 30, "col": 5},
+        {"type": "crate", "row": 30, "col": 19},
+        {"type": "crate", "row": 29, "col": 19},
+        {"type": "tree", "row": 30, "col": 20, "width": 4},
+        {"type": "rope_bridge", "row": 18, "col": 13, "width": 4},
+        {"type": "waterfall", "row": 26, "col": 30, "width": 2, "height": 4},
+        {"type": "stone_lantern", "row": 15, "col": 1},
+        {"type": "hanging_lantern", "row": 9, "col": 16},
+        {"type": "banner", "row": 6, "col": 33},
+        {"type": "torii", "row": 2, "col": 3, "width": 4},
+    ],
+}
+
+DECOR_SIZES = {   # (width tiles, height tiles)
+    "torii": (4, 4), "shrine": (4, 3), "tree": (4, 4), "waterfall": (2, 4),
+    "hanging_lantern": (2, 3), "banner": (1, 3), "bush": (2, 1), "fence": (3, 1),
+    "rope_bridge": (4, 1), "stone_lantern": (1, 2), "sign": (1, 2), "crate": (1, 1),
+}
 
 
 def make_question_deck(pool):

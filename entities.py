@@ -1,23 +1,19 @@
 """
-ENTITIES — Player character, Particle system, and FloatingText popups.
-The Player renders from the sprite bank when available, with a procedural
-fallback (recolored + styled per character) when it is not.
+ENTITIES — Player, Particle, FloatingText, Enemy, MovingPlatform.
 """
 import pygame
 import math
 import random
-
 import config
 from config import (WIDTH, HEIGHT, GROUND_Y, MOVE_SPEED, JUMP_SPEED,
                     ACCEL_GROUND, ACCEL_AIR, FRICTION_GROUND, FRICTION_AIR,
-                    WHITE, GOLD, fonts)
+                    GRAVITY, MAX_FALL_SPEED, TILE, WHITE, GOLD, fonts)
 from ui import clamp, lerp, blend_color
 from sprites import bank, ROSTER
 
 
 class Particle:
     """Small visual effect: dust puff, sparkle, or expanding ring."""
-
     def __init__(self, x, y, color, power=3.6, dust=False, ring=False):
         self.x, self.y, self.color, self.ring = float(x), float(y), color, ring
         if ring:
@@ -57,7 +53,6 @@ class Particle:
 
 class FloatingText:
     """Score/feedback popup that floats upward and fades out."""
-
     def __init__(self, text, x, y, color=GOLD):
         self.text, self.x, self.y, self.color, self.life = text, float(x), float(y), color, 64.0
 
@@ -76,13 +71,81 @@ class FloatingText:
         surface.blit(img, r)
 
 
-class Player:
-    """
-    Climber hero. Sprite-sheet animation (idle / walk / run / air / crouch)
-    with a procedural fallback, physics-driven scarf, and landing squash.
-    Character traits (speed, glide, …) are applied by the game orchestrator.
-    """
+class Enemy:
+    """Walker (E) turns at edges/walls; flyer (F) ping-pongs 3 tiles each way."""
+    def __init__(self, x, y, kind="walk"):
+        self.rect = pygame.Rect(int(x) + 4, int(y) + 4, TILE - 8, TILE - 8)
+        self.kind = kind
+        self.vx = 1.6 if kind == "walk" else 2.2
+        self.vy = 0.0
+        self.start_x = float(x)
+        self.min_x = self.start_x - 3 * TILE
+        self.max_x = self.start_x + 3 * TILE
+        self.frame = random.random() * 10.0
 
+    def update(self, dt, game):
+        self.frame += dt
+        if self.kind == "fly":
+            nx = self.rect.x + self.vx * dt
+            if nx < self.min_x:
+                nx = self.min_x
+                self.vx = abs(self.vx)
+            elif nx + self.rect.w > self.max_x + TILE:
+                nx = self.max_x + TILE - self.rect.w
+                self.vx = -abs(self.vx)
+            self.rect.x = int(nx)
+            self.rect.y += int(math.sin(self.frame * 0.06) * 0.4 * dt)
+            return
+        # walker: gravity + land
+        self.vy = min(self.vy + GRAVITY * dt, MAX_FALL_SPEED)
+        self.rect.y += int(self.vy * dt) if abs(self.vy * dt) >= 1 else (1 if self.vy > 0 and int(self.frame) % 2 == 0 else 0)
+        for s in game.platforms:
+            if self.rect.colliderect(s) and self.vy >= 0:
+                self.rect.bottom = s.top
+                self.vy = 0.0
+        # horizontal: turn at walls and at platform edges
+        nx = self.rect.x + self.vx * dt
+        if self.vx > 0:
+            front_x = nx + self.rect.w
+        else:
+            front_x = nx - 1
+        foot_r = int((self.rect.bottom + 4) // TILE)
+        front_c = int(front_x // TILE)
+        body_r = int(self.rect.centery // TILE)
+        wall_c = int((nx + self.rect.w) // TILE) if self.vx > 0 else int(nx // TILE)
+        if (front_c, foot_r) not in game.solid_cells or (wall_c, body_r) in game.solid_cells:
+            self.vx = -self.vx
+        else:
+            self.rect.x = int(nx)
+
+
+class MovingPlatform:
+    """Sideways mover (M run). Carries the player; never crushes."""
+    def __init__(self, x, y, tiles):
+        self.rect = pygame.Rect(int(x), int(y) + TILE - 14, int(tiles * TILE), 14)
+        self.start_x = float(x)
+        self.min_x = self.start_x - 3 * TILE
+        self.max_x = self.start_x + 3 * TILE
+        self.vx = 1.4
+        self.last_dx = 0.0
+
+    def update(self, dt):
+        dx = self.vx * dt
+        nx = self.rect.x + dx
+        if nx < self.min_x:
+            nx = self.min_x
+            self.vx = abs(self.vx)
+            dx = nx - self.rect.x
+        elif nx + self.rect.w > self.max_x + self.rect.w:
+            nx = self.max_x
+            self.vx = -abs(self.vx)
+            dx = nx - self.rect.x
+        self.rect.x = int(nx)
+        self.last_dx = dx
+
+
+class Player:
+    """Climber hero with sprite-bank animation + procedural fallback."""
     def __init__(self, character=None):
         self.character = character or ROSTER[0]
         self.cid = self.character["id"]
@@ -91,8 +154,7 @@ class Player:
         self.accel_mul = traits.get("accel_mul", 1.0)
         self.max_speed = MOVE_SPEED * self.speed_mul
         self.can_glide = bool(traits.get("glide", False))
-
-        self.w, self.h = 32, 54
+        self.w, self.h = 30, 52
         self.x, self.y = 64.0, float(GROUND_Y - self.h)
         self.rect = pygame.Rect(int(self.x), int(self.y), self.w, self.h)
         self.vx = self.vel_y = 0.0
@@ -102,6 +164,8 @@ class Player:
         self.gliding = False
         self.air_phase = 0
         self.anim = self.land_squash = self.coyote_timer = self.jump_buffer = self.hurt_timer = 0.0
+        self.invincible_timer = 0.0
+        self.carried_by = None
         self.scarf_points = [(self.x + 16, self.y + 22) for _ in range(4)]
         self.state_timers = {"idle": 0.0, "walk": 0.0, "run": 0.0, "air": 0.0, "crouch": 0.0}
         self.anim_state_name = "idle"
@@ -118,6 +182,7 @@ class Player:
         self.gliding = False
         self.air_phase = 0
         self.coyote_timer = self.jump_buffer = 0.0
+        self.carried_by = None
         particles.append(Particle(self.rect.centerx, self.rect.bottom, (205, 232, 235), ring=True))
         for _ in range(9):
             particles.append(Particle(self.rect.centerx, self.rect.bottom, (200, 226, 230), dust=True))
@@ -147,7 +212,6 @@ class Player:
             ty = py + 1.2 - self.vel_y * 0.12 + math.sin(self.anim * 0.35 + i * 1.1) * 1.1
             t = clamp(0.36 * dt, 0.0, 1.0)
             self.scarf_points[i] = (lerp(cx, tx, t), lerp(cy, ty, t))
-
         state = self.anim_state()
         self.anim_state_name = state
         rate = {"idle": 0.075, "walk": 0.15, "run": 0.22, "air": 0.1, "crouch": 0.18}[state]
@@ -159,21 +223,19 @@ class Player:
     def draw(self, surface, frame, shadow_surface_y):
         self.sync_rect()
         rect, cx = self.rect, self.rect.centerx
-
         d = max(0.0, shadow_surface_y - rect.bottom)
         sc = clamp(1.0 - d / 220.0, 0.35, 1.0)
         sw, sh = max(12, int(30 * sc)), max(4, int(7 * sc))
         ss = pygame.Surface((sw, sh), pygame.SRCALPHA)
         pygame.draw.ellipse(ss, (6, 12, 22, int(130 * sc)), ss.get_rect())
         surface.blit(ss, (cx - sw // 2, int(shadow_surface_y) - sh // 2))
-
         hurt = self.hurt_timer > 0 and int(frame / 4) % 2 == 0
-
+        if self.invincible_timer > 0 and int(frame / 3) % 2 == 0:
+            return  # invincibility blink
         if bank.has(self.cid):
             state = self.anim_state_name
             n = bank.count(self.cid, state)
             if state == "air":
-                # Hysteresis: hold the apex pose until clearly rising / falling.
                 if self.vel_y < -3.0:
                     self.air_phase = 0
                 elif self.vel_y > 3.0:
@@ -189,7 +251,6 @@ class Player:
             bank.draw(surface, self.cid, state, idx, cx, rect.bottom + 2,
                       height, facing=self.facing, tint=hurt)
             return
-
         self._draw_procedural(surface, frame, rect, cx, hurt)
 
     def _draw_procedural(self, surface, frame, rect, cx, hurt):
@@ -198,7 +259,6 @@ class Player:
         bob = (math.sin(frame * 0.10) if (self.on_ground and not self.walking)
                else abs(math.sin(self.anim * 0.42)) * -1.8 * speed_ratio)
         y = int(round(rect.y + bob + self.land_squash * 2.5))
-
         col = self.character["colors"]
         style = self.character.get("style", "scarf")
         skin = (255, 165, 165) if hurt else (236, 194, 162)
@@ -206,11 +266,9 @@ class Player:
         jacket = (210, 88, 98) if hurt else col["jacket"]
         jacket_shade = blend_color(jacket, (0, 0, 0), 0.28)
         pants, boots, scarf = col["pants"], (72, 54, 48), col["scarf"]
-
         pts = [(int(px), int(py)) for px, py in self.scarf_points]
         pygame.draw.lines(surface, scarf, False, pts, 5)
         pygame.draw.circle(surface, scarf, pts[-1], 2)
-
         stride = (math.sin(self.anim * 0.42) * 7.5 * speed_ratio if not airborne
                   else (-4.0 if self.vel_y < 0 else 4.0))
         hip_y = y + 36
@@ -222,23 +280,19 @@ class Player:
             pygame.draw.line(surface, pants, (hip_x, hip_y), knee, 5)
             pygame.draw.line(surface, pants, knee, (foot_x, foot_y), 5)
             pygame.draw.rect(surface, boots, (foot_x - 4 + self.facing, foot_y - 2, 9, 5), border_radius=2)
-
         arm_swing = -stride * 0.85
         shoulder_y = y + 23
         bh = (cx - self.facing * 3 - int(round(arm_swing)), y + 34)
         pygame.draw.line(surface, jacket_shade, (cx - self.facing * 4, shoulder_y), bh, 4)
         pygame.draw.circle(surface, skin, bh, 3)
-
         torso = pygame.Rect(cx - 9, y + 20, 18, 18)
         pygame.draw.rect(surface, jacket, torso, border_radius=6)
         pygame.draw.line(surface, blend_color(jacket, WHITE, 0.3),
                          (torso.left + 1, torso.top + 2), (torso.left + 1, torso.bottom - 2), 1)
         pygame.draw.rect(surface, scarf, (cx - 7, y + 19, 14, 4), border_radius=2)
-
         fh = (cx + self.facing * 3 + int(round(arm_swing)), y + 34)
         pygame.draw.line(surface, jacket, (cx + self.facing * 4, shoulder_y), fh, 4)
         pygame.draw.circle(surface, skin, fh, 3)
-
         if style == "hood":
             pygame.draw.circle(surface, jacket, (cx, y + 10), 11)
             pygame.draw.ellipse(surface, skin, (cx - 6 + self.facing * 2, y + 5, 12, 12))
@@ -259,7 +313,6 @@ class Player:
                 pygame.draw.polygon(surface, jacket, [(cx - 13, y + 5), (cx + 13, y + 5),
                                                       (cx + self.facing * 3, y - 12)])
                 pygame.draw.line(surface, scarf, (cx - 12, y + 5), (cx + 12, y + 5), 2)
-
         ex, ey = cx + self.facing * 4, y + 11
         if int(frame) % 180 < 5:
             pygame.draw.line(surface, (35, 42, 54), (ex - 2, ey), (ex + 2, ey), 2)
