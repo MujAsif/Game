@@ -1,5 +1,6 @@
 """
 AUDIO — Synthesized sound effects and ambient music.
+Only sounds with a live call site are generated: jump, land, wrong, hurt, click, check, level.
 """
 import math
 import pygame
@@ -24,7 +25,8 @@ def make_tone(frequency=440, duration=0.12, volume=0.18, kind="sine", slide=0.0)
         if kind == "triangle":
             wave = (2.0 / math.pi) * math.asin(math.sin(phase))
         elif kind == "bell":
-            wave = math.sin(phase) * 0.68 + math.sin(phase * 2.0) * 0.22 + math.sin(phase * 3.0) * 0.10
+            wave = (math.sin(phase) * 0.68 + math.sin(phase * 2.0) * 0.22
+                    + math.sin(phase * 3.0) * 0.10)
         else:
             wave = math.sin(phase)
         val = int(_clamp(32767 * volume * env * wave, -32768, 32767))
@@ -89,25 +91,29 @@ class AudioManager:
         self.music_volume, self.sfx_volume = 0.28, 0.62
         self.music, self.sounds = None, {}
         try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+            # pygame.init() already opens the mixer as 44.1 kHz stereo, which would
+            # play our 22.05 kHz mono buffers 4x too fast and two octaves too high.
+            if pygame.mixer.get_init() != (22050, -16, 1):
+                pygame.mixer.quit()
+                pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512,
+                                  allowedchanges=0)
             self.available = True
-            pygame.mixer.set_num_channels(16)   # FIX: more channels so SFX never starve
+            pygame.mixer.set_num_channels(16)
             self.music = make_ambient_music()
             self.sounds = {
-                "jump":    make_tone(340, 0.13, 0.16, "triangle", slide=180),
-                "land":    make_tone(125, 0.08, 0.14, "triangle", slide=-40),
-                "coin":    make_tone(920, 0.08, 0.13, "bell", slide=240),
-                "correct": make_chord([523.25, 659.25, 783.99, 1046.50], 0.06, 0.16),
-                "wrong":   make_tone(190, 0.25, 0.18, "triangle", slide=-55),
-                "click":   make_tone(580, 0.045, 0.11, "bell"),
-                "level":   make_chord([523.25, 659.25, 783.99, 1046.50, 1318.51], 0.08, 0.18),
-                "lower":   make_tone(180, 0.4, 0.15, "sine", slide=-80),
+                "jump":  make_tone(340, 0.13, 0.16, "triangle", slide=180),
+                "land":  make_tone(125, 0.08, 0.14, "triangle", slide=-40),
+                "wrong": make_tone(190, 0.25, 0.18, "triangle", slide=-55),
+                "click": make_tone(580, 0.045, 0.11, "bell"),
+                "hurt":  make_tone(150, 0.22, 0.20, "triangle", slide=-90),
+                "check": make_chord([659.25, 880.00, 1174.66], 0.07, 0.15),
+                "level": make_chord([523.25, 659.25, 783.99, 1046.50, 1318.51], 0.08, 0.18),
             }
             if self.music:
                 self.music.set_volume(self.music_volume)
                 self.music.play(-1)
-        except (pygame.error, OSError):
+        except (pygame.error, OSError) as exc:
+            print(f"[audio] disabled ({exc}) — running silently")
             self.available = False
 
     def play(self, name):
@@ -117,7 +123,7 @@ class AudioManager:
         if snd:
             try:
                 snd.set_volume(self.sfx_volume)
-                ch = pygame.mixer.find_channel()   # FIX: always grab a free channel
+                ch = pygame.mixer.find_channel()
                 if ch:
                     ch.play(snd)
             except pygame.error:

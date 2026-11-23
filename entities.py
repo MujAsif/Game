@@ -1,19 +1,54 @@
 """
-ENTITIES — Player, Particle, FloatingText, Enemy, MovingPlatform.
+ENTITIES — Player, Particle, FloatingText, MovingPlatform.
+All physics is per fixed 60 Hz step (no dt scaling).
+Draw methods take a camera offset and never mutate world positions.
 """
 import pygame
 import math
 import random
 import config
-from config import (WIDTH, HEIGHT, GROUND_Y, MOVE_SPEED, JUMP_SPEED,
-                    ACCEL_GROUND, ACCEL_AIR, FRICTION_GROUND, FRICTION_AIR,
-                    GRAVITY, MAX_FALL_SPEED, TILE, WHITE, GOLD, fonts)
-from ui import clamp, lerp, blend_color
+from config import (GROUND_Y, MOVE_SPEED, JUMP_SPEED, TILE, WHITE, GOLD,
+                    PLAYER_W, PLAYER_H, COYOTE_FRAMES, JUMP_BUFFER_FRAMES,
+                    JUMP_CUT_THRESHOLD, JUMP_CUT_FACTOR, GLIDE_FRAMES,
+                    DROP_THROUGH_FRAMES)
+from ui import clamp, lerp, blend_color, get_text_image
 from sprites import bank, ROSTER
+
+_RING_CACHE = {}
+_SHADOW_CACHE = {}
+_MOVER_RANGE = 3 * TILE
+
+
+def _ring_surface(radius, color, alpha):
+    key = (radius, tuple(color[:3]), alpha // 16)
+    hit = _RING_CACHE.get(key)
+    if hit is not None:
+        return hit
+    rs = pygame.Surface((radius * 2 + 4, radius * 2 + 4), pygame.SRCALPHA)
+    pygame.draw.ellipse(rs, (*color[:3], alpha),
+                        (2, max(2, radius // 2), radius * 2, max(4, radius)), 2)
+    if len(_RING_CACHE) > 200:
+        _RING_CACHE.clear()
+    _RING_CACHE[key] = rs
+    return rs
+
+
+def _shadow_surface(w, h, alpha):
+    key = (w, h, alpha // 10)
+    hit = _SHADOW_CACHE.get(key)
+    if hit is not None:
+        return hit
+    ss = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(ss, (6, 12, 22, alpha), ss.get_rect())
+    if len(_SHADOW_CACHE) > 120:
+        _SHADOW_CACHE.clear()
+    _SHADOW_CACHE[key] = ss
+    return ss
 
 
 class Particle:
-    """Small visual effect: dust puff, sparkle, or expanding ring."""
+    """Dust puff, sparkle, or expanding ring."""
+
     def __init__(self, x, y, color, power=3.6, dust=False, ring=False):
         self.x, self.y, self.color, self.ring = float(x), float(y), color, ring
         if ring:
@@ -28,169 +63,158 @@ class Particle:
             self.max_life = self.life
             self.size = random.uniform(1.6, 3.2) if dust else random.uniform(2.0, 4.4)
 
-    def update(self, dt=1.0):
-        self.x += self.vx * dt
-        self.y += self.vy * dt
-        self.vy += self.gravity * dt
-        self.vx *= 0.985 ** dt
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += self.gravity
+        self.vx *= 0.985
         if self.ring:
-            self.size += 1.5 * dt
-        self.life -= dt
+            self.size += 1.5
+        self.life -= 1.0
 
-    def draw(self, surface):
+    def draw(self, surface, cam_x=0, cam_y=0):
         ratio = clamp(self.life / max(1.0, self.max_life), 0.0, 1.0)
+        sx, sy = self.x - cam_x, self.y - cam_y
         if self.ring:
             r = max(2, int(self.size))
-            rs = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
-            pygame.draw.ellipse(rs, (*self.color[:3], int(140 * ratio)),
-                                (2, max(2, r // 2), r * 2, max(4, r)), 2)
-            surface.blit(rs, (int(self.x - r - 2), int(self.y - r)))
+            surface.blit(_ring_surface(r, self.color, int(140 * ratio)),
+                         (int(sx - r - 2), int(sy - r)))
             return
         radius = max(1, int(self.size * ratio + 0.5))
         color = tuple(int(c * (0.48 + 0.52 * ratio)) for c in self.color[:3])
-        pygame.draw.circle(surface, color, (int(self.x), int(self.y)), radius)
+        pygame.draw.circle(surface, color, (int(sx), int(sy)), radius)
 
 
 class FloatingText:
-    """Score/feedback popup that floats upward and fades out."""
+    """Feedback popup that floats up and fades. Glyphs cached once."""
+
     def __init__(self, text, x, y, color=GOLD):
-        self.text, self.x, self.y, self.color, self.life = text, float(x), float(y), color, 64.0
+        self.text, self.x, self.y, self.color = text, float(x), float(y), color
+        self.life = 64.0
+        # copies: set_alpha must not leak into the shared text cache
+        self._img = get_text_image(text, config.fonts.SMALL, color).copy()
+        self._shade = get_text_image(text, config.fonts.SMALL, (6, 11, 20)).copy()
 
-    def update(self, dt=1.0):
-        self.y -= 0.68 * dt
-        self.life -= dt
+    def update(self):
+        self.y -= 0.68
+        self.life -= 1.0
 
-    def draw(self, surface):
+    def draw(self, surface, cam_x=0, cam_y=0):
         alpha = int(255 * clamp(self.life / 22.0, 0.0, 1.0))
-        shade = fonts.SMALL.render(self.text, True, (6, 11, 20))
-        shade.set_alpha(alpha)
-        img = fonts.SMALL.render(self.text, True, self.color)
-        img.set_alpha(alpha)
-        r = img.get_rect(center=(int(self.x), int(self.y)))
-        surface.blit(shade, r.move(1, 2))
-        surface.blit(img, r)
-
-
-class Enemy:
-    """Walker (E) turns at edges/walls; flyer (F) ping-pongs 3 tiles each way."""
-    def __init__(self, x, y, kind="walk"):
-        self.rect = pygame.Rect(int(x) + 4, int(y) + 4, TILE - 8, TILE - 8)
-        self.kind = kind
-        self.vx = 1.6 if kind == "walk" else 2.2
-        self.vy = 0.0
-        self.start_x = float(x)
-        self.min_x = self.start_x - 3 * TILE
-        self.max_x = self.start_x + 3 * TILE
-        self.frame = random.random() * 10.0
-
-    def update(self, dt, game):
-        self.frame += dt
-        if self.kind == "fly":
-            nx = self.rect.x + self.vx * dt
-            if nx < self.min_x:
-                nx = self.min_x
-                self.vx = abs(self.vx)
-            elif nx + self.rect.w > self.max_x + TILE:
-                nx = self.max_x + TILE - self.rect.w
-                self.vx = -abs(self.vx)
-            self.rect.x = int(nx)
-            self.rect.y += int(math.sin(self.frame * 0.06) * 0.4 * dt)
-            return
-        # walker: gravity + land
-        self.vy = min(self.vy + GRAVITY * dt, MAX_FALL_SPEED)
-        self.rect.y += int(self.vy * dt) if abs(self.vy * dt) >= 1 else (1 if self.vy > 0 and int(self.frame) % 2 == 0 else 0)
-        for s in game.platforms:
-            if self.rect.colliderect(s) and self.vy >= 0:
-                self.rect.bottom = s.top
-                self.vy = 0.0
-        # horizontal: turn at walls and at platform edges
-        nx = self.rect.x + self.vx * dt
-        if self.vx > 0:
-            front_x = nx + self.rect.w
-        else:
-            front_x = nx - 1
-        foot_r = int((self.rect.bottom + 4) // TILE)
-        front_c = int(front_x // TILE)
-        body_r = int(self.rect.centery // TILE)
-        wall_c = int((nx + self.rect.w) // TILE) if self.vx > 0 else int(nx // TILE)
-        if (front_c, foot_r) not in game.solid_cells or (wall_c, body_r) in game.solid_cells:
-            self.vx = -self.vx
-        else:
-            self.rect.x = int(nx)
+        r = self._img.get_rect(center=(int(self.x - cam_x), int(self.y - cam_y)))
+        self._shade.set_alpha(alpha)
+        self._img.set_alpha(alpha)
+        surface.blit(self._shade, r.move(1, 2))
+        surface.blit(self._img, r)
 
 
 class MovingPlatform:
-    """Sideways mover (M run). Carries the player; never crushes."""
+    """Sideways mover. Float position, exact integer carry, never crushes."""
+
     def __init__(self, x, y, tiles):
+        self.fx = float(x)
         self.rect = pygame.Rect(int(x), int(y) + TILE - 14, int(tiles * TILE), 14)
         self.start_x = float(x)
-        self.min_x = self.start_x - 3 * TILE
-        self.max_x = self.start_x + 3 * TILE
+        self.min_x = self.start_x - _MOVER_RANGE
+        self.max_x = self.start_x + _MOVER_RANGE
         self.vx = 1.4
-        self.last_dx = 0.0
+        self.last_dx = 0
 
-    def update(self, dt):
-        dx = self.vx * dt
-        nx = self.rect.x + dx
+    def update(self):
+        prev = self.rect.x
+        nx = self.fx + self.vx
         if nx < self.min_x:
-            nx = self.min_x
-            self.vx = abs(self.vx)
-            dx = nx - self.rect.x
-        elif nx + self.rect.w > self.max_x + self.rect.w:
-            nx = self.max_x
-            self.vx = -abs(self.vx)
-            dx = nx - self.rect.x
-        self.rect.x = int(nx)
-        self.last_dx = dx
+            nx, self.vx = self.min_x, abs(self.vx)
+        elif nx > self.max_x:
+            nx, self.vx = self.max_x, -abs(self.vx)
+        self.fx = nx
+        self.rect.x = int(round(nx))
+        self.last_dx = self.rect.x - prev
 
 
 class Player:
-    """Climber hero with sprite-bank animation + procedural fallback."""
+    """Climber hero: sprite-bank animation with procedural fallback."""
+
     def __init__(self, character=None):
         self.character = character or ROSTER[0]
         self.cid = self.character["id"]
         traits = self.character.get("traits", {})
+
+        # Every perk advertised in ROSTER is read here.
         self.speed_mul = traits.get("speed_mul", 1.0)
         self.accel_mul = traits.get("accel_mul", 1.0)
-        self.max_speed = MOVE_SPEED * self.speed_mul
+        self.jump_mul = traits.get("jump_mul", 1.0)
+        self.invuln_bonus = traits.get("invuln_bonus", 0)
+        self.coyote_max = COYOTE_FRAMES + traits.get("coyote_bonus", 0)
+        self.buffer_max = JUMP_BUFFER_FRAMES + traits.get("buffer_bonus", 0)
         self.can_glide = bool(traits.get("glide", False))
-        self.w, self.h = 30, 52
+
+        self.max_speed = MOVE_SPEED * self.speed_mul
+        self.jump_speed = JUMP_SPEED * self.jump_mul
+
+        self.w, self.h = PLAYER_W, PLAYER_H
         self.x, self.y = 64.0, float(GROUND_Y - self.h)
         self.rect = pygame.Rect(int(self.x), int(self.y), self.w, self.h)
         self.vx = self.vel_y = 0.0
         self.on_ground = True
+        self.on_one_way = False
         self.facing = 1
         self.walking = False
         self.gliding = False
+        self.glide_fuel = GLIDE_FRAMES
+        self.drop_timer = 0
         self.air_phase = 0
-        self.anim = self.land_squash = self.coyote_timer = self.jump_buffer = self.hurt_timer = 0.0
+        self.anim = 0.0
+        self.land_squash = 0.0
+        self.coyote_timer = 0.0
+        self.jump_buffer = 0.0
+        self.hurt_timer = 0.0
         self.invincible_timer = 0.0
+        self.jump_cut_ready = False
         self.carried_by = None
         self.scarf_points = [(self.x + 16, self.y + 22) for _ in range(4)]
         self.state_timers = {"idle": 0.0, "walk": 0.0, "run": 0.0, "air": 0.0, "crouch": 0.0}
         self.anim_state_name = "idle"
 
+    def reset_scarf(self):
+        """Snap the scarf to the body after any teleport (respawn, checkpoint)."""
+        self.scarf_points = [(self.x + 16, self.y + 22) for _ in range(4)]
+
     def sync_rect(self):
         self.rect.topleft = (int(round(self.x)), int(round(self.y)))
 
     def request_jump(self):
-        self.jump_buffer = 7.0
+        self.jump_buffer = float(self.buffer_max)
+
+    def drop_through(self):
+        self.drop_timer = DROP_THROUGH_FRAMES
+        self.on_ground = False
+        self.on_one_way = False
+        self.carried_by = None
+        self.coyote_timer = 0.0
+        self.jump_buffer = 0.0
+        self.y += 2.0
+        self.sync_rect()
 
     def execute_jump(self, particles, audio):
-        self.vel_y = JUMP_SPEED
+        self.vel_y = self.jump_speed
         self.on_ground = False
+        self.on_one_way = False
         self.gliding = False
         self.air_phase = 0
-        self.coyote_timer = self.jump_buffer = 0.0
+        self.coyote_timer = 0.0
+        self.jump_buffer = 0.0
         self.carried_by = None
+        self.jump_cut_ready = True
         particles.append(Particle(self.rect.centerx, self.rect.bottom, (205, 232, 235), ring=True))
         for _ in range(9):
             particles.append(Particle(self.rect.centerx, self.rect.bottom, (200, 226, 230), dust=True))
         audio.play("jump")
 
     def cut_jump(self):
-        if self.vel_y < -5.5:
-            self.vel_y *= 0.56
+        if self.jump_cut_ready and self.vel_y < JUMP_CUT_THRESHOLD:
+            self.vel_y *= JUMP_CUT_FACTOR
+        self.jump_cut_ready = False
 
     def anim_state(self):
         if not self.on_ground:
@@ -203,35 +227,32 @@ class Player:
             return "walk"
         return "idle"
 
-    def update_scarf(self, dt=1.0):
+    def update_scarf(self):
         self.scarf_points[0] = (self.x + self.w * 0.5 - self.facing * 3, self.y + 22)
         for i in range(1, len(self.scarf_points)):
             px, py = self.scarf_points[i - 1]
             cx, cy = self.scarf_points[i]
             tx = px - self.facing * 5.2 - self.vx * 0.35
             ty = py + 1.2 - self.vel_y * 0.12 + math.sin(self.anim * 0.35 + i * 1.1) * 1.1
-            t = clamp(0.36 * dt, 0.0, 1.0)
-            self.scarf_points[i] = (lerp(cx, tx, t), lerp(cy, ty, t))
+            self.scarf_points[i] = (lerp(cx, tx, 0.36), lerp(cy, ty, 0.36))
         state = self.anim_state()
         self.anim_state_name = state
         rate = {"idle": 0.075, "walk": 0.15, "run": 0.22, "air": 0.1, "crouch": 0.18}[state]
         if state == "walk":
             rate *= clamp(abs(self.vx) / self.max_speed, 0.4, 1.2)
-        self.state_timers[state] += dt * rate
+        self.state_timers[state] += rate
 
-    # ── rendering ────────────────────────────────────────────────
-    def draw(self, surface, frame, shadow_surface_y):
-        self.sync_rect()
-        rect, cx = self.rect, self.rect.centerx
-        d = max(0.0, shadow_surface_y - rect.bottom)
+    def draw(self, surface, frame, shadow_surface_y, cam_x=0, cam_y=0):
+        rect = self.rect.move(-int(cam_x), -int(cam_y))
+        cx = rect.centerx
+        d = max(0.0, (shadow_surface_y - cam_y) - rect.bottom)
         sc = clamp(1.0 - d / 220.0, 0.35, 1.0)
         sw, sh = max(12, int(30 * sc)), max(4, int(7 * sc))
-        ss = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        pygame.draw.ellipse(ss, (6, 12, 22, int(130 * sc)), ss.get_rect())
-        surface.blit(ss, (cx - sw // 2, int(shadow_surface_y) - sh // 2))
+        surface.blit(_shadow_surface(sw, sh, int(130 * sc)),
+                     (cx - sw // 2, int(shadow_surface_y - cam_y) - sh // 2))
         hurt = self.hurt_timer > 0 and int(frame / 4) % 2 == 0
         if self.invincible_timer > 0 and int(frame / 3) % 2 == 0:
-            return  # invincibility blink
+            return
         if bank.has(self.cid):
             state = self.anim_state_name
             n = bank.count(self.cid, state)
@@ -251,9 +272,9 @@ class Player:
             bank.draw(surface, self.cid, state, idx, cx, rect.bottom + 2,
                       height, facing=self.facing, tint=hurt)
             return
-        self._draw_procedural(surface, frame, rect, cx, hurt)
+        self._draw_procedural(surface, frame, rect, cx, hurt, cam_x, cam_y)
 
-    def _draw_procedural(self, surface, frame, rect, cx, hurt):
+    def _draw_procedural(self, surface, frame, rect, cx, hurt, cam_x, cam_y):
         airborne = not self.on_ground
         speed_ratio = clamp(abs(self.vx) / MOVE_SPEED, 0.0, 1.0)
         bob = (math.sin(frame * 0.10) if (self.on_ground and not self.walking)
@@ -266,7 +287,7 @@ class Player:
         jacket = (210, 88, 98) if hurt else col["jacket"]
         jacket_shade = blend_color(jacket, (0, 0, 0), 0.28)
         pants, boots, scarf = col["pants"], (72, 54, 48), col["scarf"]
-        pts = [(int(px), int(py)) for px, py in self.scarf_points]
+        pts = [(int(px - cam_x), int(py - cam_y)) for px, py in self.scarf_points]
         pygame.draw.lines(surface, scarf, False, pts, 5)
         pygame.draw.circle(surface, scarf, pts[-1], 2)
         stride = (math.sin(self.anim * 0.42) * 7.5 * speed_ratio if not airborne
@@ -279,7 +300,8 @@ class Player:
             knee = ((hip_x + foot_x) // 2 + self.facing * 2, (hip_y + foot_y) // 2)
             pygame.draw.line(surface, pants, (hip_x, hip_y), knee, 5)
             pygame.draw.line(surface, pants, knee, (foot_x, foot_y), 5)
-            pygame.draw.rect(surface, boots, (foot_x - 4 + self.facing, foot_y - 2, 9, 5), border_radius=2)
+            pygame.draw.rect(surface, boots, (foot_x - 4 + self.facing, foot_y - 2, 9, 5),
+                             border_radius=2)
         arm_swing = -stride * 0.85
         shoulder_y = y + 23
         bh = (cx - self.facing * 3 - int(round(arm_swing)), y + 34)
@@ -308,7 +330,8 @@ class Player:
                                  (cx - self.facing * 16, y + 20), 4)
                 pygame.draw.circle(surface, hair, (cx - self.facing * 16, y + 20), 3)
             elif style == "knight":
-                pygame.draw.rect(surface, (210, 222, 238), (cx - 10, y + 3, 20, 4), border_radius=2)
+                pygame.draw.rect(surface, (210, 222, 238), (cx - 10, y + 3, 20, 4),
+                                 border_radius=2)
             elif style == "hat":
                 pygame.draw.polygon(surface, jacket, [(cx - 13, y + 5), (cx + 13, y + 5),
                                                       (cx + self.facing * 3, y - 12)])

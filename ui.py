@@ -1,14 +1,15 @@
 """
 UI — Drawing toolkit: text, gradients, panels, pills, glows, shapes, Button.
-FIX: removed the harsh white top-highlight lines from pills/panels.
+All repeated surfaces (veils, shadows, gradients, glyphs) are cached.
 """
 import pygame
 import math
 import config
-from config import (INK, PANEL_BG, PANEL_BORDER, WHITE, MUTED, SUBTLE,
-                    GOLD, GOLD_SOFT, MINT, CORAL, BLUE)
+from config import PANEL_BG, PANEL_BORDER, WHITE, GOLD
 
 _SURFACE_CACHE = {}
+_VEIL_CACHE = {}
+_TEXT_CACHE = {}
 
 
 def clamp(v, lo, hi):
@@ -24,8 +25,25 @@ def blend_color(c1, c2, t):
     return tuple(int(lerp(c1[i], c2[i], t)) for i in range(3))
 
 
-def draw_text(surface, text, font, color, pos, center=False, right=False, shadow=False, valign="top"):
-    img = font.render(str(text), True, color)
+def _cache_put(cache, key, value, limit=260):
+    if len(cache) > limit:
+        cache.clear()
+    cache[key] = value
+    return value
+
+
+def get_text_image(text, font, color):
+    """Cached glyph surface. Never mutate the result; use set_alpha on a copy."""
+    key = (id(font), str(text), tuple(color[:3]))
+    hit = _TEXT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    return _cache_put(_TEXT_CACHE, key, font.render(str(text), True, color), 400)
+
+
+def draw_text(surface, text, font, color, pos, center=False, right=False,
+              shadow=False, valign="top"):
+    img = get_text_image(text, font, color)
     rect = img.get_rect()
     if center:
         rect.center = (int(pos[0]), int(pos[1]))
@@ -36,8 +54,7 @@ def draw_text(surface, text, font, color, pos, center=False, right=False, shadow
     else:
         rect.topleft = (int(pos[0]), int(pos[1]))
     if shadow:
-        shade = font.render(str(text), True, (6, 10, 18))
-        shade.set_alpha(140)
+        shade = get_text_image(text, font, (6, 10, 18))
         surface.blit(shade, rect.move(1, 2))
     surface.blit(img, rect)
     return rect
@@ -59,17 +76,27 @@ def wrap_text(text, font, max_width):
 
 
 def veil(alpha):
+    """Cached full-screen tint. Alpha quantised to keep the cache small."""
+    a = int(clamp(alpha, 0, 255))
+    key = (config.WIDTH, config.HEIGHT, a)
+    hit = _VEIL_CACHE.get(key)
+    if hit is not None:
+        return hit
     s = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
-    s.fill((6, 11, 20, alpha))
-    return s
+    s.fill((6, 11, 20, a))
+    return _cache_put(_VEIL_CACHE, key, s, 80)
 
 
 def _shadow_box(w, h, radius, layers):
+    key = ("shadow", w, h, radius, tuple(layers))
+    hit = _SURFACE_CACHE.get(key)
+    if hit is not None:
+        return hit
     pad = 14
     box = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
     for ox, oy, a, r in layers:
         pygame.draw.rect(box, (3, 7, 15, a), (pad + ox, pad + oy, w, h), border_radius=r)
-    return box, pad
+    return _cache_put(_SURFACE_CACHE, key, (box, pad), 320)
 
 
 def get_gradient_surface(size, top, bottom, radius=0):
@@ -86,10 +113,7 @@ def get_gradient_surface(size, top, bottom, radius=0):
         mask = pygame.Surface((w, h), pygame.SRCALPHA)
         pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=radius)
         grad.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-    if len(_SURFACE_CACHE) > 260:
-        _SURFACE_CACHE.clear()
-    _SURFACE_CACHE[key] = grad
-    return grad
+    return _cache_put(_SURFACE_CACHE, key, grad, 320)
 
 
 def gradient_rect(surface, rect, top, bottom, radius=0):
@@ -98,46 +122,35 @@ def gradient_rect(surface, rect, top, bottom, radius=0):
         surface.blit(get_gradient_surface((rect.w, rect.h), top, bottom, radius), rect.topleft)
 
 
-def draw_pill(surface, rect, fill=(16, 26, 42, 224), border=(145, 175, 200, 75), shadow=True):
+def _boxed_rect(rect, fill, border, radius, shadow, kind):
     rect = pygame.Rect(rect)
-    radius = rect.h // 2
-    key = ("pill", rect.w, rect.h, tuple(fill), tuple(border), shadow)
+    key = (kind, rect.w, rect.h, tuple(fill), tuple(border), radius, shadow)
     cached = _SURFACE_CACHE.get(key)
     if cached is None:
         if shadow:
-            box, pad = _shadow_box(rect.w, rect.h, radius,
-                                   [(-4, 6, 50, radius + 2), (-2, 3, 80, radius + 1), (0, 2, 110, radius)])
+            if kind == "pill":
+                layers = [(-4, 6, 50, radius + 2), (-2, 3, 80, radius + 1), (0, 2, 110, radius)]
+            else:
+                layers = [(-6, 8, 40, radius + 4), (-3, 5, 70, radius + 2), (0, 3, 100, radius)]
+            box, pad = _shadow_box(rect.w, rect.h, radius, layers)
         else:
             box, pad = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA), 0
         inner = pygame.Rect(pad, pad, rect.w, rect.h)
         pygame.draw.rect(box, fill, inner, border_radius=radius)
         pygame.draw.rect(box, border, inner, 1, border_radius=radius)
-        if len(_SURFACE_CACHE) > 260:
-            _SURFACE_CACHE.clear()
-        cached = (box, pad)
-        _SURFACE_CACHE[key] = cached
-    box, pad = cached
+        cached = _cache_put(_SURFACE_CACHE, key, (box, pad), 320)
+    return cached
+
+
+def draw_pill(surface, rect, fill=(16, 26, 42, 224), border=(145, 175, 200, 75), shadow=True):
+    rect = pygame.Rect(rect)
+    box, pad = _boxed_rect(rect, fill, border, rect.h // 2, shadow, "pill")
     surface.blit(box, (rect.x - pad, rect.y - pad))
 
 
 def panel(surface, rect, fill=PANEL_BG, border=PANEL_BORDER, radius=20, shadow=True):
     rect = pygame.Rect(rect)
-    key = ("panel", rect.w, rect.h, tuple(fill), tuple(border), radius, shadow)
-    cached = _SURFACE_CACHE.get(key)
-    if cached is None:
-        if shadow:
-            box, pad = _shadow_box(rect.w, rect.h, radius,
-                                   [(-6, 8, 40, radius + 4), (-3, 5, 70, radius + 2), (0, 3, 100, radius)])
-        else:
-            box, pad = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA), 0
-        inner = pygame.Rect(pad, pad, rect.w, rect.h)
-        pygame.draw.rect(box, fill, inner, border_radius=radius)
-        pygame.draw.rect(box, border, inner, 1, border_radius=radius)
-        if len(_SURFACE_CACHE) > 260:
-            _SURFACE_CACHE.clear()
-        cached = (box, pad)
-        _SURFACE_CACHE[key] = cached
-    box, pad = cached
+    box, pad = _boxed_rect(rect, fill, border, radius, shadow, "panel")
     surface.blit(box, (rect.x - pad, rect.y - pad))
 
 
@@ -152,17 +165,17 @@ def get_radial_glow(radius, color, max_alpha=46, rings=5):
         frac = i / rings
         alpha = int(max_alpha * (1.0 - frac * 0.7) / rings * 1.8)
         pygame.draw.circle(surf, (*color[:3], clamp(alpha, 1, 255)), (r, r), int(r * frac))
-    _SURFACE_CACHE[key] = surf
-    return surf
+    return _cache_put(_SURFACE_CACHE, key, surf, 320)
 
 
 def get_smooth_heart(size, color, filled=True):
-    key = ("heart", int(size), tuple(color[:3]), filled)
+    size = max(12, int(size))
+    key = ("heart", size, tuple(color[:3]), filled)
     cached = _SURFACE_CACHE.get(key)
     if cached is not None:
         return cached
     scale = 3
-    s = max(12, int(size)) * scale
+    s = size * scale
     surf = pygame.Surface((s, s), pygame.SRCALPHA)
     r = int(s * 0.23)
     cx, cy = s // 2, int(s * 0.37)
@@ -183,32 +196,13 @@ def get_smooth_heart(size, color, filled=True):
         pygame.draw.polygon(surf, (24, 36, 54, 180), poly)
         pygame.draw.line(surf, o, (cx - r * 2 + 3, cy + r // 3), tip, 3 * scale // 2)
         pygame.draw.line(surf, o, (cx + r * 2 - 3, cy + r // 3), tip, 3 * scale // 2)
-    final = pygame.transform.smoothscale(surf, (int(size), int(size)))
-    _SURFACE_CACHE[key] = final
-    return final
-
-
-def get_smooth_star(size, color):
-    key = ("star", int(size), tuple(color[:3]))
-    cached = _SURFACE_CACHE.get(key)
-    if cached is not None:
-        return cached
-    s = max(12, int(size)) * 3
-    surf = pygame.Surface((s, s), pygame.SRCALPHA)
-    c = s // 2
-    pts = []
-    for i in range(8):
-        a = i * math.pi / 4 - math.pi / 2
-        rad = s * 0.44 if i % 2 == 0 else s * 0.16
-        pts.append((c + math.cos(a) * rad, c + math.sin(a) * rad))
-    pygame.draw.polygon(surf, color, pts)
-    final = pygame.transform.smoothscale(surf, (int(size), int(size)))
-    _SURFACE_CACHE[key] = final
-    return final
+    final = pygame.transform.smoothscale(surf, (size, size))
+    return _cache_put(_SURFACE_CACHE, key, final, 320)
 
 
 class Button:
     """Interactive button with hover lift and press animation."""
+
     def __init__(self, key, rect, label, action, accent=GOLD):
         self.key = key
         self.rect = pygame.Rect(rect)
@@ -217,8 +211,8 @@ class Button:
         self.accent = accent
         self.hover = self.press = 0.0
 
-    def update(self, mouse_pos, dt=1.0):
-        target = 1.0 if self.rect.collidepoint(mouse_pos) else 0.0
+    def update(self, mouse_pos, dt=1.0, selected=False):
+        target = 1.0 if (self.rect.collidepoint(mouse_pos) or selected) else 0.0
         self.hover = lerp(self.hover, target, 1.0 - (0.76 ** dt))
         self.press = max(0.0, self.press - 0.15 * dt)
 
@@ -227,10 +221,13 @@ class Button:
         rect = self.rect.move(0, -lift)
         radius = rect.h // 2
         box, pad = _shadow_box(rect.w, rect.h, radius,
-                               [(-3, 5, 60, radius + 2), (-1, 3, 90, radius + 1), (0, 2, 120, radius)])
+                               [(-3, 5, 60, radius + 2), (-1, 3, 90, radius + 1),
+                                (0, 2, 120, radius)])
         surface.blit(box, (rect.x - pad, rect.y - pad))
         fill = blend_color((25, 39, 60), (38, 58, 86), self.hover)
         border = blend_color((92, 120, 148), self.accent, self.hover * 0.85)
         pygame.draw.rect(surface, fill, rect, border_radius=radius)
-        pygame.draw.rect(surface, border, rect, 2 if self.hover > 0.2 else 1, border_radius=radius)
-        draw_text(surface, self.label, config.fonts.SMALL, WHITE, rect.center, center=True, shadow=True)
+        pygame.draw.rect(surface, border, rect, 2 if self.hover > 0.2 else 1,
+                         border_radius=radius)
+        draw_text(surface, self.label, config.fonts.SMALL, WHITE, rect.center,
+                  center=True, shadow=True)

@@ -1,90 +1,89 @@
 """
 SPRITES — Character roster + loader for the uniform hero grid sheet.
-
 Reads assets/sprites/heroes.png: six rows, one character per row in ROSTER
-order. Figures are located per row by connected components (immune to stray
-feet / hat-tips from neighbouring rows), re-packed into equal-size cells
-anchored on a shared foot baseline and a head-centred axis.
+order. Figures are located per row by connected components, re-packed into
+equal-size cells anchored on a shared foot baseline and a head-centred axis.
+
+Requires pygame >= 2.1.3 (pygame.image.tobytes / frombytes).
+Every perk listed here is implemented in entities.Player / game.Game.
 """
 import os
 import json
 import math
 from collections import deque
-
 import pygame
-
 import config
-from config import INK, GOLD, GOLD_SOFT, MINT, MUTED, SUBTLE, BLUE, CORAL, WHITE
-from ui import clamp, blend_color, draw_text, get_radial_glow, gradient_rect
+from config import GOLD, GOLD_SOFT, MINT, MUTED, WHITE, BLUE, CORAL
+from ui import draw_text, get_radial_glow, gradient_rect
 
-PIPELINE_VERSION = 11
+PIPELINE_VERSION = 12
 SHEET_NAME = "heroes.png"
 
 ROSTER = [
     {
         "id": 0, "name": "ASH", "title": "The Wayfarer", "short": "WAYFARER",
-        "perk": "FORTUNE +10%",
-        "perk_desc": "A seasoned road-walker. Every trial answered true pays a little more — fortune favors the steady.",
+        "perk": "STEADY GRIP",
+        "perk_desc": "Road-hardened balance: +4 frames of coyote time and +3 of jump buffer.",
         "accent": BLUE,
         "colors": {"jacket": (46, 114, 138), "scarf": (242, 168, 76),
                    "pants": (36, 46, 64), "hair": (44, 48, 62)},
-        "traits": {"score_mul": 1.10},
-        "stats": {"SPEED": 3, "LEAP": 3, "HEART": 3, "FORTUNE": 4},
+        "traits": {"coyote_bonus": 4, "buffer_bonus": 3},
+        "stats": {"SPEED": 3, "LEAP": 3, "HEART": 3, "GRIP": 5},
         "style": "scarf",
     },
     {
         "id": 1, "name": "LYRA", "title": "The Ember Scholar", "short": "SCHOLAR",
-        "perk": "SCORE +25%",
-        "perk_desc": "Scholar of the ember codex. Correct answers burn brighter: +25% score on every solved trial.",
+        "perk": "HIGHER LEAP",
+        "perk_desc": "Ember-lit legs: jump velocity +7%, clearing half a tile more height.",
         "accent": CORAL,
         "colors": {"jacket": (186, 58, 70), "scarf": (210, 44, 60),
                    "pants": (52, 38, 44), "hair": (58, 36, 34)},
-        "traits": {"score_mul": 1.25},
-        "stats": {"SPEED": 3, "LEAP": 3, "HEART": 3, "FORTUNE": 5},
+        "traits": {"jump_mul": 1.07},
+        "stats": {"SPEED": 3, "LEAP": 5, "HEART": 3, "GRIP": 3},
         "style": "ponytail",
     },
     {
         "id": 2, "name": "ALDRIC", "title": "The Sentinel", "short": "SENTINEL",
         "perk": "+1 HEART",
-        "perk_desc": "Oathbound sentinel of the ridge. Begins every expedition with one extra heart above the company.",
+        "perk_desc": "Oathbound sentinel: begins every trial with one extra heart.",
         "accent": (168, 208, 252),
         "colors": {"jacket": (96, 120, 156), "scarf": (236, 242, 250),
                    "pants": (40, 48, 66), "hair": (70, 52, 40)},
         "traits": {"bonus_hearts": 1},
-        "stats": {"SPEED": 2, "LEAP": 2, "HEART": 5, "FORTUNE": 2},
+        "stats": {"SPEED": 2, "LEAP": 2, "HEART": 5, "GRIP": 3},
         "style": "knight",
     },
     {
         "id": 3, "name": "NYX", "title": "The Shadow", "short": "SHADOW",
         "perk": "SPEED +18%",
-        "perk_desc": "Whisper of the hollow. Moves 18% faster than any companion — the beacons blur past.",
+        "perk_desc": "Whisper of the hollow: moves 18% faster, with 15% quicker acceleration.",
         "accent": (168, 124, 244),
         "colors": {"jacket": (56, 48, 84), "scarf": (126, 88, 196),
                    "pants": (30, 28, 44), "hair": (30, 26, 40)},
         "traits": {"speed_mul": 1.18, "accel_mul": 1.15},
-        "stats": {"SPEED": 5, "LEAP": 3, "HEART": 3, "FORTUNE": 2},
+        "stats": {"SPEED": 5, "LEAP": 3, "HEART": 3, "GRIP": 2},
         "style": "hood",
     },
     {
         "id": 4, "name": "MIRAE", "title": "The Rune Weaver", "short": "WEAVER",
-        "perk": "FORESIGHT",
-        "perk_desc": "Weaver of runes. Once per region, press H during a trial to strike two false answers from the scroll.",
+        "perk": "SOFT RECOVERY",
+        "perk_desc": "Runewoven warding: double invincibility after a hit — room to escape.",
         "accent": (198, 142, 255),
         "colors": {"jacket": (98, 66, 172), "scarf": (152, 106, 236),
                    "pants": (44, 36, 64), "hair": (40, 30, 56)},
-        "traits": {"hint": 1},
-        "stats": {"SPEED": 3, "LEAP": 3, "HEART": 3, "FORTUNE": 4},
+        "traits": {"invuln_bonus": 60},
+        "stats": {"SPEED": 3, "LEAP": 3, "HEART": 3, "GRIP": 4},
         "style": "hat",
     },
     {
         "id": 5, "name": "FEN", "title": "The Verdant Scout", "short": "SCOUT",
         "perk": "FEATHERFALL",
-        "perk_desc": "Warden of the canopy. Hold JUMP while falling to feather your descent and drift onto distant ledges.",
+        "perk_desc": "Hold JUMP while falling to feather your descent — 90 frames per leap.",
         "accent": (146, 214, 128),
         "colors": {"jacket": (88, 130, 76), "scarf": (122, 170, 94),
                    "pants": (46, 44, 38), "hair": (64, 44, 30)},
         "traits": {"glide": True},
-        "stats": {"SPEED": 3, "LEAP": 5, "HEART": 3, "FORTUNE": 3},
+        "stats": {"SPEED": 3, "LEAP": 5, "HEART": 3, "GRIP": 3},
         "style": "hood",
     },
 ]
@@ -120,7 +119,6 @@ def _find_sheet():
 def _background_mask(surf):
     w, h = surf.get_size()
     data = pygame.image.tobytes(surf, "RGBA")
-
     trans = white = black = 0
     samples = []
 
@@ -139,15 +137,21 @@ def _background_mask(surf):
     for x in range(0, w, 5):
         for i in (x, (h - 1) * w + x):
             c = classify(i)
-            if c == 0: trans += 1
-            elif c == 1: white += 1
-            elif c == 2: black += 1
+            if c == 0:
+                trans += 1
+            elif c == 1:
+                white += 1
+            elif c == 2:
+                black += 1
     for y in range(0, h, 5):
         for i in (y * w, y * w + w - 1):
             c = classify(i)
-            if c == 0: trans += 1
-            elif c == 1: white += 1
-            elif c == 2: black += 1
+            if c == 0:
+                trans += 1
+            elif c == 1:
+                white += 1
+            elif c == 2:
+                black += 1
 
     target = None
     if trans > (white + black):
@@ -169,11 +173,13 @@ def _background_mask(surf):
             return data[o] > 234 and data[o + 1] > 234 and data[o + 2] > 234
         if mode == "black":
             return data[o] < 26 and data[o + 1] < 26 and data[o + 2] < 26 and data[o + 3] > 20
+        if target is None:
+            return False
         return (abs(data[o] - target[0]) <= 14 and abs(data[o + 1] - target[1]) <= 14
                 and abs(data[o + 2] - target[2]) <= 14 and data[o + 3] > 20)
 
     bg = bytearray(w * h)
-    if mode != "alpha":
+    if mode not in ("alpha",):
         dq = deque()
         for x in range(w):
             for i in (x, (h - 1) * w + x):
@@ -323,8 +329,7 @@ def _trim(fg, w, xa, ya, xb, yb):
 
 
 def _merge_side(comps, gap=6, ov=0.4):
-    """Re-attach side capes / ponytails that vertically overlap the body.
-    Never merges vertically-stacked fragments (feet from the row above)."""
+    """Re-attach side capes / ponytails that vertically overlap the body."""
     changed = True
     while changed:
         changed = False
@@ -415,7 +420,6 @@ def _build_cells(cleaned, figs):
     baseline = max(b[3] for b in idle)
     hs = sorted(b[3] - b[1] for b in idle)
     ref_h = float(hs[len(hs) // 2])
-
     heads = [_head_anchor_x(cleaned, b, ref_h) for b in figs]
     left_ext = max(heads)
     right_ext = max((b[2] - b[0]) - hx for b, hx in zip(figs, heads))
@@ -424,7 +428,6 @@ def _build_cells(cleaned, figs):
     bot_ext = max(0, max(b[3] - baseline for b in figs))
     ch = int(top_ext + bot_ext) + 8
     base_y = int(top_ext) + 4
-
     cells = []
     for b, hx in zip(figs, heads):
         x0, y0, x1, y1 = b[:4]
@@ -466,8 +469,10 @@ def _default_progress(step, total, label):
         w, h = s.get_size()
         gradient_rect(s, (0, 0, w, h), (13, 22, 38), (24, 40, 52))
         s.blit(get_radial_glow(180, GOLD, 30, 6), (w // 2 - 180, h // 2 - 220))
-        draw_text(s, "THE THREE TRIALS", config.fonts.LARGE, WHITE, (w // 2, h // 2 - 90), center=True, shadow=True)
-        draw_text(s, "SUMMONING THE COMPANY", config.fonts.SMALL, GOLD_SOFT, (w // 2, h // 2 - 40), center=True)
+        draw_text(s, "THE THREE TRIALS", config.fonts.LARGE, WHITE,
+                  (w // 2, h // 2 - 90), center=True, shadow=True)
+        draw_text(s, "SUMMONING THE COMPANY", config.fonts.SMALL, GOLD_SOFT,
+                  (w // 2, h // 2 - 40), center=True)
         bw, bh = 440, 14
         bx, by = w // 2 - bw // 2, h // 2
         pygame.draw.rect(s, (30, 44, 64), (bx, by, bw, bh), border_radius=7)
@@ -502,12 +507,6 @@ class SpriteBank:
         self.ensure()
         return len(self.chars[cid]["anims"].get(anim) or self.chars[cid]["anims"]["idle"])
 
-    def base_h(self, cid):
-        return self.chars[cid]["base_h"]
-
-    def portrait(self, cid):
-        return self.chars[cid].get("portrait")
-
     def _scaled(self, key, frame, height, flip, tint):
         hit = self._cache.get(key)
         if hit is not None:
@@ -515,6 +514,7 @@ class SpriteBank:
         s = max(1.0, height) / max(1.0, frame.h)
         w = max(1, int(round(frame.surf.get_width() * s)))
         h = max(1, int(round(frame.surf.get_height() * s)))
+        # Heroes are high-res AI art being downscaled: smoothscale is correct here.
         surf = pygame.transform.smoothscale(frame.surf, (w, h))
         if flip:
             surf = pygame.transform.flip(surf, True, False)
@@ -530,7 +530,9 @@ class SpriteBank:
         return out
 
     def draw(self, surface, cid, anim, idx, cx, bottom, height, facing=1, tint=False):
-        entry = self.chars[cid]
+        entry = self.chars.get(cid)
+        if not entry:
+            return
         frames = entry["anims"].get(anim) or entry["anims"]["idle"]
         i = idx % len(frames)
         flip = (facing < 0) != (getattr(config, "SPRITE_SOURCE_FACING", 1) < 0)
@@ -562,7 +564,7 @@ class SpriteBank:
                     p = os.path.join(self._cache_dir(), f"{cid_s}_{anim}_{i}.png")
                     frames.append(Frame(pygame.image.load(p).convert_alpha(), ax, ay, ref))
                 anims[anim] = frames
-            chars[int(cid_s)] = {"anims": anims, "portrait": None, "base_h": entry["base_h"]}
+            chars[int(cid_s)] = {"anims": anims, "base_h": entry["base_h"]}
         self.chars = chars
         return True
 
@@ -574,7 +576,8 @@ class SpriteBank:
             for anim, frames in entry["anims"].items():
                 metas = []
                 for i, fr in enumerate(frames):
-                    pygame.image.save(fr.surf, os.path.join(self._cache_dir(), f"{cid}_{anim}_{i}.png"))
+                    pygame.image.save(fr.surf,
+                                      os.path.join(self._cache_dir(), f"{cid}_{anim}_{i}.png"))
                     metas.append([fr.ax, fr.ay, fr.h])
                 anims[anim] = metas
             index["chars"][str(cid)] = {"anims": anims, "base_h": entry["base_h"]}
@@ -586,12 +589,10 @@ class SpriteBank:
         data, bg, fg, w, h, mode = _background_mask(surf)
         cleaned = _clean_surface(data, bg, w, h)
         print(f"[sprites] {path} {surf.get_size()} bg={mode}")
-
         rows = _row_bands(fg, w, (0, 0, w, h), max(8, int(h * 0.05)))
         if len(rows) != len(ROSTER):
             rows = [(int(i * h / len(ROSTER)), int((i + 1) * h / len(ROSTER)))
                     for i in range(len(ROSTER))]
-
         chars = {}
         for idx, ch in enumerate(ROSTER):
             ya, yb = rows[idx]
@@ -601,9 +602,9 @@ class SpriteBank:
                 continue
             cells, ref_h = _build_cells(cleaned, figs)
             anims = _map_animations(cells)
-            chars[ch["id"]] = {"anims": anims, "portrait": None, "base_h": ref_h}
+            chars[ch["id"]] = {"anims": anims, "base_h": ref_h}
             print(f"[sprites] {ch['name']}: {len(cells)} poses -> " +
-                  ", ".join(f"{k}×{len(v)}" for k, v in anims.items()))
+                  ", ".join(f"{k}x{len(v)}" for k, v in anims.items()))
         self.chars = chars
 
     def load(self, progress=None):
@@ -628,19 +629,19 @@ class SpriteBank:
             self.dir = os.path.dirname(path)
             key = self._cache_key(path)
             try:
-                tick(1, 2, "Restoring the company…")
+                tick(1, 2, "Restoring the company...")
                 if self._try_load_cache(key):
                     self.ready = True
                     self.status = f"{len(self.chars)} heroes restored from cache"
                     print(f"[sprites] {self.status}")
                     tick(2, 2, "The company awaits.")
                     return self
-            except Exception:
-                pass
-
-            tick(1, 4, "Reading the hero grid…")
+            except Exception as exc:
+                print(f"[sprites] cache restore skipped: {exc}")
+                self.chars = {}
+            tick(1, 4, "Reading the hero grid...")
             self._process(path)
-            tick(3, 4, "Sealing the cache…")
+            tick(3, 4, "Sealing the cache...")
             try:
                 self._write_cache(key)
             except Exception as exc:
@@ -653,8 +654,9 @@ class SpriteBank:
             tick(4, 4, "The company awaits.")
         except Exception as exc:
             self.ready = False
+            self.chars = {}
             self.status = f"SPRITE PIPELINE ERROR: {exc}"
-            print(f"[sprites] disabled: {exc}")
+            print(f"[sprites] disabled: {exc} — using procedural heroes")
         return self
 
 
