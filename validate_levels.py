@@ -4,6 +4,14 @@ VALIDATE LEVELS — standalone audit of data.py.   Run:  python validate_levels.
 
 Exit 0 = clean, 1 = warnings, 2 = cannot run.
 No display needed; only config constants are imported.
+
+Movers are question-gated: a mover node sits at its parked start; riding it
+(after a right answer) links start <-> end of its route. Two extra audits:
+  * GATE BYPASS — the goal must be unreachable with every gate locked, using
+    GENEROUS physics (best jumper, fastest runner, BASIL's glide, full coyote
+    time, no safety margin). Each gate is also checked on its own.
+  * MOVER CORRIDOR — the swept path of a mover plus a rider's head-room must
+    not cut through solid terrain.
 """
 import math
 import sys
@@ -23,6 +31,11 @@ AIR_TIME = 2 * JUMP_V / GRAVITY
 MAX_JUMP_D = MOVE_SPEED * AIR_TIME
 SAFE_STEP = SAFE_FACTOR * MAX_JUMP_H
 SAFE_GAP = SAFE_FACTOR * MAX_JUMP_D
+
+# Generous "best hero" profiles for the bypass audit: (jump_mul, speed_mul, glide)
+HERO_PROFILES = ((1.07, 1.0, False), (1.0, 1.18, False), (1.0, 1.0, True))
+COYOTE_MAX = config.COYOTE_FRAMES + 4
+PLAYER_W = config.PLAYER_W
 
 KNOWN = set("=|-M^v~KPG ")
 LEFTOVER = set("cEF")
@@ -77,7 +90,38 @@ def strip_rows(text):
     return out, widths
 
 
-def parse(text):
+def _hero_reach(rise, jm, sm, glide):
+    """Max horizontal travel (px) of a jump that lands on a surface `rise` px
+    above take-off (negative = below). None if that height is out of reach."""
+    v = -JUMP_V * jm
+    if rise > v * v / (2 * GRAVITY):
+        return None
+    y, x, best, fuel = 0.0, 0.0, None, config.GLIDE_FRAMES
+    speed = MOVE_SPEED * sm
+    for _ in range(600):
+        gl = glide and v > 1.0 and fuel > 0
+        if gl:
+            fuel -= 1
+        v = min(v + GRAVITY * (config.GLIDE_GRAVITY_MUL if gl else 1.0),
+                config.MAX_FALL_SPEED * (config.GLIDE_FALL_MUL if gl else 1.0))
+        y += v
+        x += speed
+        if v > 0 and -y <= rise:
+            best = x
+            break
+    if best is None:
+        return None
+    return best + COYOTE_MAX * speed + PLAYER_W
+
+
+def can_edge_generous(a, b):
+    rise = a.top - b.top
+    g = gap(a, b)
+    return any((r := _hero_reach(rise, jm, sm, gl)) is not None and g <= r
+               for jm, sm, gl in HERO_PROFILES)
+
+
+def parse(text, routes=None):
     rows, widths = strip_rows(text)
     cols = max(widths, default=0)
     rows = [r.ljust(cols) for r in rows]
@@ -86,7 +130,8 @@ def parse(text):
          "spikes_ceil": [], "spike_runs": [], "water_runs": [],
          "checkpoints": [], "start": None, "goal": None,
          "leftovers": [], "unknown": [], "p_count": 0, "g_count": 0,
-         "solid_cells": set()}
+         "solid_cells": set(), "gates": []}
+    routes = routes or {}
     for r, line in enumerate(rows):
         c = 0
         while c < cols:
@@ -110,7 +155,14 @@ def parse(text):
                 while c < cols and line[c] == "M":
                     c += 1
                 w = (c - c0) * TILE
-                d["movers"].append(Rect(x - 3 * TILE, y + TILE - 14, w + 6 * TILE, 14))
+                route = routes.get((r, c0))
+                if route is None:       # legacy patrol: always on, +-3 tiles
+                    d["movers"].append(Rect(x - 3 * TILE, y + TILE - 14, w + 6 * TILE, 14))
+                else:
+                    start = Rect(x, y + TILE - 14, w, 14)
+                    end = Rect(x + route[0] * TILE, y + TILE - 14 + route[1] * TILE, w, 14)
+                    d["gates"].append({"start": start, "end": end, "route": route,
+                                       "row": r, "col": c0})
                 continue
             if ch == "^":
                 c0 = c
@@ -170,9 +222,41 @@ def can_edge(a, b):
     return g <= SAFE_FACTOR * MOVE_SPEED * t + 0.5
 
 
-def audit(index, text, decorations, decor_sizes):
+def _reach(nodes, start_i, edge, rides, enabled):
+    """Flood fill. rides: list of (i, j) node pairs joined by an unlocked mover."""
+    reach = [False] * len(nodes)
+    if start_i < 0:
+        return reach
+    reach[start_i] = True
+    frontier = [start_i]
+    while frontier:
+        i = frontier.pop()
+        for j in range(len(nodes)):
+            if not reach[j] and nodes[j][2] in enabled and edge(nodes[i][0], nodes[j][0]):
+                reach[j] = True
+                frontier.append(j)
+        for k, (a, b) in enumerate(rides):
+            if ("ride", k) not in enabled:
+                continue
+            for x, y in ((a, b), (b, a)):
+                if i == x and not reach[y]:
+                    reach[y] = True
+                    frontier.append(y)
+    return reach
+
+
+def _goal_reached(reach, nodes, g, max_h):
+    return any(reach[i] and rr.left <= g.centerx <= rr.right and -40 <= rr.top - g.bottom <= max_h
+               for i, (rr, _s, _t) in enumerate(nodes))
+
+
+def audit(index, text, decorations, decor_sizes, routes=None):
     warns = []
-    d = parse(text)
+    routes = routes or {}
+    d = parse(text, routes)
+    for (r, c) in routes:
+        if not any(gt["row"] == r and gt["col"] == c for gt in d["gates"]):
+            warns.append(f"MOVER_ROUTES entry (row {r}, col {c}) has no 'M' run starting there")
 
     if len(set(d["widths"])) > 1:
         base = max(set(d["widths"]), key=d["widths"].count)
@@ -195,9 +279,16 @@ def audit(index, text, decorations, decor_sizes):
         if (sc, sr + 1) not in d["solid_cells"]:
             warns.append(f"'P' (row {sr}, col {sc}) not on solid ground")
 
-    nodes = [(p, True) for p in d["platforms"]]
-    nodes += [(o, False) for o in d["one_way"]]
-    nodes += [(m, True) for m in d["movers"]]
+    # node = (rect, is_solid, tag); tag decides whether the node exists when
+    # a given set of gates is locked.
+    nodes = [(p, True, "static") for p in d["platforms"]]
+    nodes += [(o, False, "static") for o in d["one_way"]]
+    nodes += [(m, True, "static") for m in d["movers"]]
+    rides = []
+    for k, gt in enumerate(d["gates"]):
+        nodes.append((gt["start"], True, "static"))          # parked = real platform
+        nodes.append((gt["end"], True, ("ride", k)))          # only there once unlocked
+        rides.append((len(nodes) - 2, len(nodes) - 1))
 
     # rope_bridge decorations create real one-way surfaces
     bridges = []
@@ -207,34 +298,59 @@ def audit(index, text, decorations, decor_sizes):
         wt = dec.get("width", decor_sizes.get("rope_bridge", (4, 1))[0])
         br = Rect(dec["col"] * TILE, (dec["row"] + SKY_ROWS) * TILE, wt * TILE, 12)
         bridges.append(br)
-        nodes.append((br, False))
+        nodes.append((br, False, "static"))
 
     start_i = -1
     if d["start"]:
         sx, gy = d["start"][0], d["start"][1]
-        for i, (r, _s) in enumerate(nodes):
+        for i, (r, _s, _t) in enumerate(nodes):
             if abs(r.top - gy) < 2 and r.left <= sx <= r.right:
                 start_i = i
                 break
-    reach = [False] * len(nodes)
-    if start_i >= 0:
-        reach[start_i] = True
-        frontier = [start_i]
-        while frontier:
-            i = frontier.pop()
-            for j in range(len(nodes)):
-                if not reach[j] and can_edge(nodes[i][0], nodes[j][0]):
-                    reach[j] = True
-                    frontier.append(j)
-    else:
+    all_on = {"static"} | {("ride", k) for k in range(len(rides))}
+    reach = _reach(nodes, start_i, can_edge, rides, all_on)
+    if start_i < 0:
         warns.append("spawn surface not found — cannot start reachability search")
 
-    for i, (r, _s) in enumerate(nodes):
+    for i, (r, _s, _t) in enumerate(nodes):
         if not reach[i]:
             warns.append(f"UNREACHABLE surface {r.rowcol()}")
 
-    for i, (r, _s) in enumerate(nodes):
-        for (o, osolid) in nodes:
+    # ── gates must be mandatory ──
+    if d["goal"] is not None and start_i >= 0 and rides:
+        max_h = (JUMP_V * 1.07) ** 2 / (2 * GRAVITY)
+        locked = _reach(nodes, start_i, can_edge_generous, rides, {"static"})
+        if _goal_reached(locked, nodes, d["goal"], max_h):
+            warns.append("GATE BYPASS — goal reachable with every mover locked")
+        for k, gt in enumerate(d["gates"]):
+            others = all_on - {("ride", k)}
+            r_k = _reach(nodes, start_i, can_edge_generous, rides, others)
+            if _goal_reached(r_k, nodes, d["goal"], max_h):
+                warns.append(f"GATE BYPASS — gate at (row {gt['row']}, col {gt['col']}) "
+                             f"can be skipped")
+    if not rides:
+        warns.append("no question-gated movers (add MOVER_ROUTES entries)")
+
+    # ── mover corridors: the rider must never be dragged through terrain ──
+    for gt in d["gates"]:
+        a, b = gt["start"], gt["end"]
+        steps = max(2, int(math.hypot(b.x - a.x, b.y - a.y) // 10))
+        for s_i in range(steps + 1):
+            k = s_i / steps
+            mx, my = a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k
+            body = Rect(mx, my - PLAYER_H, a.w, PLAYER_H + a.h)
+            hit = next((p for p in d["platforms"]
+                        if p.left < body.right and body.left < p.right
+                        and p.top < body.bottom and body.top < p.bottom), None)
+            if hit:
+                warns.append(f"MOVER CORRIDOR (row {gt['row']}, col {gt['col']}) "
+                             f"cuts through solid {hit.rowcol()}")
+                break
+
+    for i, (r, _s, _t) in enumerate(nodes):
+        for (o, osolid, otag) in nodes:
+            if otag != "static":
+                continue
             if osolid and o is not r and o.overlaps_x(r) and o.bottom < r.top \
                     and r.top - PLAYER_H < o.bottom <= r.top:
                 warns.append(f"LOW CEILING over {r.rowcol()} — "
@@ -243,14 +359,14 @@ def audit(index, text, decorations, decor_sizes):
 
     for (cx, cgy, r, c) in d["checkpoints"]:
         if not any(reach[i] and rr.left <= cx <= rr.right and abs(rr.top - cgy) < 4
-                   for i, (rr, _s) in enumerate(nodes)):
+                   for i, (rr, _s, _t) in enumerate(nodes)):
             warns.append(f"UNREACHABLE checkpoint (row {r}, col {c})")
 
     if d["goal"] is not None:
         g = d["goal"]
         if not any(reach[i] and rr.left <= g.centerx <= rr.right
                    and -40 <= rr.top - g.bottom <= MAX_JUMP_H
-                   for i, (rr, _s) in enumerate(nodes)):
+                   for i, (rr, _s, _t) in enumerate(nodes)):
             warns.append(f"UNREACHABLE goal 'G' {g.rowcol()}")
     else:
         warns.append("MISSING goal 'G'")
@@ -259,7 +375,7 @@ def audit(index, text, decorations, decor_sizes):
         if run.w > SAFE_GAP:
             warns.append(f"spike run {run.rowcol()} {run.w}px wide "
                          f"(safe {SAFE_GAP:.0f}px)")
-        if not [rr for (rr, _s) in nodes
+        if not [rr for (rr, _s, _t) in nodes
                 if run.right - TILE <= rr.left <= run.right + SAFE_GAP
                 and abs(rr.top - run.top) <= SAFE_STEP]:
             warns.append(f"spike run {run.rowcol()} has no landing spot after it")
@@ -267,11 +383,11 @@ def audit(index, text, decorations, decor_sizes):
         if run.w > SAFE_GAP:
             warns.append(f"water gap {run.rowcol()} {run.w}px wide "
                          f"(safe {SAFE_GAP:.0f}px)")
-        if not [rr for (rr, _s) in nodes
+        if not [rr for (rr, _s, _t) in nodes
                 if run.right - TILE <= rr.left <= run.right + SAFE_GAP]:
             warns.append(f"water gap {run.rowcol()} has no landing spot after it")
 
-    surfaces = [r for (r, _s) in nodes]
+    surfaces = [r for (r, _s, t) in nodes if t == "static"]
     for dec in decorations:
         t = dec["type"]
         if t in SURFACELESS_DECOR:
@@ -297,7 +413,7 @@ def audit(index, text, decorations, decor_sizes):
 
     tag = "OK" if not warns else f"{len(warns)} WARNING(S)"
     print(f"[validate] level {index + 1}: {len(nodes)} surfaces, {sum(reach)} reachable, "
-          f"{d['cols']}x{len(d['rows'])} — {tag}")
+          f"{len(rides)} question gate(s), {d['cols']}x{len(d['rows'])} — {tag}")
     for w in warns:
         print(f"  [level {index + 1}] {w}")
     return warns
@@ -320,7 +436,8 @@ def main():
         return 2
     total = 0
     for i, lay in enumerate(data.LEVEL_LAYOUTS):
-        total += len(audit(i, lay, data.DECORATIONS.get(i, []), data.DECOR_SIZES))
+        total += len(audit(i, lay, data.DECORATIONS.get(i, []), data.DECOR_SIZES,
+                           getattr(data, "MOVER_ROUTES", {}).get(i, {})))
     print(f"[validate] done — {total} warning(s)")
     return 1 if total else 0
 

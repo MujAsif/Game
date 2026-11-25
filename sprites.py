@@ -21,7 +21,7 @@ SHEET_NAME = "heroes.png"
 
 ROSTER = [
     {
-        "id": 0, "name": "ASH", "title": "The Wayfarer", "short": "WAYFARER",
+        "id": 0, "name": "MUJTABA", "title": "The Wayfarer", "short": "WAYFARER",
         "perk": "STEADY GRIP",
         "perk_desc": "Road-hardened balance: +4 frames of coyote time and +3 of jump buffer.",
         "accent": BLUE,
@@ -32,7 +32,7 @@ ROSTER = [
         "style": "scarf",
     },
     {
-        "id": 1, "name": "LYRA", "title": "The Ember Scholar", "short": "SCHOLAR",
+        "id": 1, "name": "KAUSAR", "title": "The Ember Scholar", "short": "SCHOLAR",
         "perk": "HIGHER LEAP",
         "perk_desc": "Ember-lit legs: jump velocity +7%, clearing half a tile more height.",
         "accent": CORAL,
@@ -43,7 +43,7 @@ ROSTER = [
         "style": "ponytail",
     },
     {
-        "id": 2, "name": "ALDRIC", "title": "The Sentinel", "short": "SENTINEL",
+        "id": 2, "name": "ABDULLAH", "title": "The Sentinel", "short": "SENTINEL",
         "perk": "+1 HEART",
         "perk_desc": "Oathbound sentinel: begins every trial with one extra heart.",
         "accent": (168, 208, 252),
@@ -54,7 +54,7 @@ ROSTER = [
         "style": "knight",
     },
     {
-        "id": 3, "name": "NYX", "title": "The Shadow", "short": "SHADOW",
+        "id": 3, "name": "ABIHA", "title": "The Shadow", "short": "SHADOW",
         "perk": "SPEED +18%",
         "perk_desc": "Whisper of the hollow: moves 18% faster, with 15% quicker acceleration.",
         "accent": (168, 124, 244),
@@ -65,7 +65,7 @@ ROSTER = [
         "style": "hood",
     },
     {
-        "id": 4, "name": "MIRAE", "title": "The Rune Weaver", "short": "WEAVER",
+        "id": 4, "name": "SHIMRAH", "title": "The Rune Weaver", "short": "WEAVER",
         "perk": "SOFT RECOVERY",
         "perk_desc": "Runewoven warding: double invincibility after a hit — room to escape.",
         "accent": (198, 142, 255),
@@ -76,7 +76,7 @@ ROSTER = [
         "style": "hat",
     },
     {
-        "id": 5, "name": "FEN", "title": "The Verdant Scout", "short": "SCOUT",
+        "id": 5, "name": "BASIL", "title": "The Verdant Scout", "short": "SCOUT",
         "perk": "FEATHERFALL",
         "perk_desc": "Hold JUMP while falling to feather your descent — 90 frames per leap.",
         "accent": (146, 214, 128),

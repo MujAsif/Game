@@ -109,27 +109,84 @@ class FloatingText:
 
 
 class MovingPlatform:
-    """Sideways mover. Float position, exact integer carry, never crushes."""
+    """Question-gated mover.
 
-    def __init__(self, x, y, tiles):
-        self.fx = float(x)
+    Starts LOCKED and parked at its start point. Once activate() is called
+    (right answer) it ping-pongs between start and start + route, pausing at
+    each end so the player can board. Routes may be horizontal, vertical or
+    diagonal. last_dx / last_dy are exact integer deltas for carrying.
+    Without a route it falls back to the old ±3-tile sideways patrol.
+    """
+
+    SPEED = 2.0            # px per 60 Hz step along the route
+    DWELL = 50             # frames parked at each end once active
+
+    def __init__(self, x, y, tiles, route=None, locked=True):
         self.rect = pygame.Rect(int(x), int(y) + TILE - 14, int(tiles * TILE), 14)
-        self.start_x = float(x)
-        self.min_x = self.start_x - _MOVER_RANGE
-        self.max_x = self.start_x + _MOVER_RANGE
-        self.vx = 1.4
-        self.last_dx = 0
+        self.ax, self.ay = float(self.rect.x), float(self.rect.y)
+        if route is None:
+            route, locked = (0, 0), False
+            self._legacy = True
+        else:
+            self._legacy = False
+        self.bx = self.ax + route[0] * TILE
+        self.by = self.ay + route[1] * TILE
+        self.length = math.hypot(self.bx - self.ax, self.by - self.ay)
+        self.fx, self.fy = self.ax, self.ay
+        self.t = 0.0                  # distance travelled from A toward B
+        self.dir = 1
+        self.wait = 0
+        self.locked = locked
+        self.pending_question = None  # question shown but not yet answered
+        self.glow = 0.0               # flash after unlocking
+        self.last_dx = self.last_dy = 0
+        self.vx = 1.4                 # legacy patrol speed
+        self._saved = (self.fx, self.fy, 0.0, 1, 0, self.vx, self.rect.x, self.rect.y)
+
+    @property
+    def route_end(self):
+        return (self.bx, self.by)
+
+    def activate(self):
+        self.locked = False
+        self.wait = 20
+        self.glow = 1.0
+
+    def undo(self):
+        """Cancel this step's move (something is in the way): the mover waits."""
+        (self.fx, self.fy, self.t, self.dir, self.wait, self.vx,
+         self.rect.x, self.rect.y) = self._saved
+        self.last_dx = self.last_dy = 0
 
     def update(self):
-        prev = self.rect.x
-        nx = self.fx + self.vx
-        if nx < self.min_x:
-            nx, self.vx = self.min_x, abs(self.vx)
-        elif nx > self.max_x:
-            nx, self.vx = self.max_x, -abs(self.vx)
-        self.fx = nx
-        self.rect.x = int(round(nx))
-        self.last_dx = self.rect.x - prev
+        prev_x, prev_y = self.rect.x, self.rect.y
+        self._saved = (self.fx, self.fy, self.t, self.dir, self.wait, self.vx, prev_x, prev_y)
+        self.glow = max(0.0, self.glow - 0.02)
+        if self._legacy:
+            nx = self.fx + self.vx
+            if nx < self.ax - _MOVER_RANGE:
+                nx, self.vx = self.ax - _MOVER_RANGE, abs(self.vx)
+            elif nx > self.ax + _MOVER_RANGE:
+                nx, self.vx = self.ax + _MOVER_RANGE, -abs(self.vx)
+            self.fx = nx
+        elif not self.locked and self.length > 0:
+            if self.wait > 0:
+                self.wait -= 1
+            else:
+                self.t += self.dir * self.SPEED
+                if self.t >= self.length:
+                    self.t, self.dir, self.wait = self.length, -1, self.DWELL
+                elif self.t <= 0:
+                    self.t, self.dir, self.wait = 0.0, 1, self.DWELL
+                k = self.t / self.length
+                # ease in/out so riders aren't jolted at the ends
+                k = k * k * (3 - 2 * k)
+                self.fx = self.ax + (self.bx - self.ax) * k
+                self.fy = self.ay + (self.by - self.ay) * k
+        self.rect.x = int(round(self.fx))
+        self.rect.y = int(round(self.fy))
+        self.last_dx = self.rect.x - prev_x
+        self.last_dy = self.rect.y - prev_y
 
 
 class Player:

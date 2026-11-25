@@ -146,7 +146,9 @@ gets plainer.
 | Jump | `W`, `↑` or `Space` |
 | Short hop | **Tap and release** jump — release early cuts upward velocity to 56% |
 | Full jump | **Hold** jump through the rise |
-| Featherfall *(FEN only)* | **Hold** jump while falling — 42% gravity, 50% terminal velocity |
+| Featherfall *(BASIL only)* | **Hold** jump while falling — 42% gravity, 50% terminal velocity |
+| Answer a Python gate | Stand on a glowing **?** platform, press `E` (or `Enter`) |
+| Pick an answer | `1`–`4`, or arrows + `Enter`, or click · `Esc` steps back |
 | Pause | `Esc` or `P` |
 
 ### Main menu
@@ -193,15 +195,15 @@ victory portrait.
 
 | # | Name | Title | Perk | Effect |
 |:-:|---|---|---|---|
-| 1 | **ASH** | The Wayfarer | `STEADY GRIP` | +4 frames coyote time, +3 frames jump buffer |
-| 2 | **LYRA** | The Ember Scholar | `HIGHER LEAP` | Jump velocity ×1.07 — roughly half a tile more height |
-| 3 | **ALDRIC** | The Sentinel | `+1 HEART` | Starts every level with **6** hearts instead of 5 |
-| 4 | **NYX** | The Shadow | `SPEED +18%` | Top speed ×1.18, acceleration ×1.15 |
-| 5 | **MIRAE** | The Rune Weaver | `SOFT RECOVERY` | Double invincibility window after a hit |
-| 6 | **FEN** | The Verdant Scout | `FEATHERFALL` | Hold jump while descending to glide onto distant ledges |
+| 1 | **MUJTABA** | The Wayfarer | `STEADY GRIP` | +4 frames coyote time, +3 frames jump buffer |
+| 2 | **KAUSAR** | The Ember Scholar | `HIGHER LEAP` | Jump velocity ×1.07 — roughly half a tile more height |
+| 3 | **ABDULLAH** | The Sentinel | `+1 HEART` | Starts every level with **6** hearts instead of 5 |
+| 4 | **ABIHA** | The Shadow | `SPEED +18%` | Top speed ×1.18, acceleration ×1.15 |
+| 5 | **SHIMRAH** | The Rune Weaver | `SOFT RECOVERY` | Double invincibility window after a hit |
+| 6 | **BASIL** | The Verdant Scout | `FEATHERFALL` | Hold jump while descending to glide onto distant ledges |
 
 > ⚠️ **Three perks are declared but not yet applied by the physics code.**
-> ALDRIC, NYX and FEN are fully live. ASH, LYRA and MIRAE currently play identically to
+> ABDULLAH, ABIHA and BASIL are fully live. MUJTABA, KAUSAR and SHIMRAH currently play identically to
 > baseline. See [Known gaps](#known-gaps) for the exact one-line fixes.
 
 ### Stat pips
@@ -210,12 +212,12 @@ The detail panel reads five-point pips straight from `ROSTER`:
 
 | Traveler | SPEED | LEAP | HEART | GRIP | FORTUNE |
 |---|:-:|:-:|:-:|:-:|:-:|
-| ASH | 3 | 3 | 3 | 5 | — |
-| LYRA | 3 | 5 | 3 | — | — |
-| ALDRIC | 2 | 2 | 5 | — | 2 |
-| NYX | 5 | 3 | 3 | — | 2 |
-| MIRAE | 3 | 3 | 3 | 4 | — |
-| FEN | 3 | 5 | 3 | — | 3 |
+| MUJTABA | 3 | 3 | 3 | 5 | — |
+| KAUSAR | 3 | 5 | 3 | — | — |
+| ABDULLAH | 2 | 2 | 5 | — | 2 |
+| ABIHA | 5 | 3 | 3 | — | 2 |
+| SHIMRAH | 3 | 3 | 3 | 4 | — |
+| BASIL | 3 | 5 | 3 | — | 3 |
 
 ---
 
@@ -238,6 +240,30 @@ transition and the sky, background and terrain surfaces are rebuilt.
 ---
 
 ## Game systems
+
+### Python gates (question-gated movers)
+
+Every moving platform starts **locked**: parked, dim, with a **?** rune and a dotted
+line showing where it will travel. Stand on it (or right beside it) and press `E`:
+
+- **Right answer** → the platform wakes up and ping-pongs along its route (horizontal,
+  vertical lift or diagonal skiff), pausing at each end so you can board.
+- **Wrong answer** → you lose a heart, see the explanation, and get a *different*
+  question next time. Backing out with `Esc` is free, but the same question waits.
+
+The levels are built so each gate is **mandatory** — the tiers it joins are too far
+apart to jump, even for KAUSAR's high jump, ABIHA's speed or BASIL's glide.
+`validate_levels.py` proves this on every run (`GATE BYPASS` warnings).
+Each level draws from its own bank in `data.MOVER_QUESTIONS`, getting harder each level:
+basics → control flow → collections → functions → strings, errors & classes.
+
+| Level | Gates |
+|---|:-:|
+| 1 Sakura Sanctum | 1 lift |
+| 2 Ember Canopy | diagonal skiff + lift |
+| 3 Verdant Hollow | diagonal skiff + lift |
+| 4 Frostbound Ridge | long ferry + tall lift |
+| 5 Moonlit Cascades | diagonal skiff + ferry + lift |
 
 ### Movement physics
 
@@ -359,7 +385,7 @@ tiles (200 px) below the world origin, so there is always headroom above the top
 |:-:|---|---|
 | `=` `\|` | **Solid terrain** | Runs merge into one rect; autotiled from neighbours |
 | `-` | **One-way platform** | 12 px cap at the cell bottom; land from above only |
-| `M` | **Moving platform** | 14 px thick, patrols ±3 tiles at 1.4 px/frame, carries the player |
+| `M` | **Python gate mover** | 14 px thick, locked until answered; route `(dx, dy)` tiles in `MOVER_ROUTES[level][(row, col)]` keyed by its leftmost `M`. An `M` with no route falls back to the old ±3-tile patrol |
 | `^` | **Spiked floor** | Solid cell **plus** a 24 px spike strip on top |
 | `v` | **Ceiling spikes** | 24 px downward strip, no solid body |
 | `~` | **Water** | Lethal on contact |
@@ -480,7 +506,7 @@ continues on fallbacks.
 ### 2 — Hero sheet (`sprites.py`)
 
 Place **`assets/sprites/heroes.png`**: six rows, one character per row in `ROSTER` order
-(ASH, LYRA, ALDRIC, NYX, MIRAE, FEN), poses left to right.
+(MUJTABA, KAUSAR, ABDULLAH, ABIHA, SHIMRAH, BASIL), poses left to right.
 
 The pipeline is genuinely non-trivial:
 
@@ -723,7 +749,7 @@ and frostbound ridges — not from a generic UI kit.
 | `GOLD_SOFT` | `#FFE4A8` | Subtitles, coin highlights |
 | `MINT` | `#56D6A6` | Checkpoints, success, resume |
 | `CORAL` | `#F26270` | Hearts, damage, destructive actions |
-| `BLUE` | `#68B0F2` | Information, navigation, ASH |
+| `BLUE` | `#68B0F2` | Information, navigation, MUJTABA |
 | `CRIMSON` | `#DC3C50` | Title shadow, procedural menu accent |
 
 ### Regional accents
@@ -788,7 +814,7 @@ The game narrates its own asset resolution. A healthy boot looks like:
 ```
 [jump] height=140.4px airtime=37.9f distance=197.3px | safe step=105.3px safe gap=148.0px
 [sprites] assets/sprites/heroes.png (2048, 1536) bg=white
-[sprites] ASH: 9 poses -> idle×2, walk×4, run×1, air×3, crouch×1
+[sprites] MUJTABA: 9 poses -> idle×2, walk×4, run×1, air×3, crouch×1
 [sprites] 6 heroes · 54 frames
 [game] tileset loaded: assets/tiles/sakura_tiles.png
 [audit] level 1: 14 surfaces, 14 reachable — OK
@@ -826,21 +852,21 @@ sites use hardcoded values:
 
 | Perk | Current code | Location | Should be |
 |---|---|---|---|
-| ASH · coyote | `p.coyote_timer = 7.0` | `game.update_player` | `7.0 + traits["coyote_bonus"]` |
-| ASH · buffer | `self.jump_buffer = 7.0` | `Player.request_jump` | `7.0 + traits["buffer_bonus"]` |
-| LYRA · leap | `self.vel_y = JUMP_SPEED` | `Player.execute_jump` | `JUMP_SPEED * traits["jump_mul"]` |
-| MIRAE · recovery | `p.invincible_timer = 60.0` | `game._hurt` | `60.0 + traits["invuln_bonus"]` |
+| MUJTABA · coyote | `p.coyote_timer = 7.0` | `game.update_player` | `7.0 + traits["coyote_bonus"]` |
+| MUJTABA · buffer | `self.jump_buffer = 7.0` | `Player.request_jump` | `7.0 + traits["buffer_bonus"]` |
+| KAUSAR · leap | `self.vel_y = JUMP_SPEED` | `Player.execute_jump` | `JUMP_SPEED * traits["jump_mul"]` |
+| SHIMRAH · recovery | `p.invincible_timer = 60.0` | `game._hurt` | `60.0 + traits["invuln_bonus"]` |
 
 Store the traits on the `Player` in `__init__`, then read them at those four sites.
-ALDRIC (`bonus_hearts`, applied in `Game.new_stats`), NYX and FEN already work.
+ABDULLAH (`bonus_hearts`, applied in `Game.new_stats`), ABIHA and BASIL already work.
 
 ### 3 — Other notes
 
 - **`JUMP_V`** in `game.py` must be `abs(JUMP_SPEED)`. If it reads `abs(1)`, the derived
   envelope and every audit result are wrong.
-- **Trials II & III** are intentional placeholders. The question banks in `data.py`
-  (`LEVEL1_QUESTIONS` … `LEVEL3_QUESTIONS`, plus `make_question_deck`) are authored and
-  ready, but no quiz scene consumes them yet.
+- **Trials II & III** are intentional placeholders. Trial I's gates already use
+  `data.MOVER_QUESTIONS` through `make_question_deck`; `LEVEL1_QUESTIONS` …
+  `LEVEL3_QUESTIONS` now alias the first three banks for those future modes.
 - **`_get_tile_type()`** in `game.py` is superseded by the inline neighbour-mask logic in
   `_build_terrain()` and is currently dead code.
 - **`config.PHYSICS_HZ`** and **`config.SPRITE_CACHE_DIR`** are declared but unused —

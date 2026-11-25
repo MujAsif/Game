@@ -4,6 +4,11 @@ prop PNGs, spikes, movers that carry, checkpoints, i-frames.
 
 Physics runs on a fixed 60 Hz accumulator; rendering runs at display rate.
 Level reachability auditing lives in validate_levels.py (run it separately).
+
+Progression: every moving platform starts LOCKED. Standing on (or next to) one
+and pressing E opens a Python question (scene "QUIZ"); the right answer starts
+the platform, a wrong one costs a heart. The level layouts make each mover
+mandatory, so the questions gate progress.
 """
 import os
 import json
@@ -20,9 +25,11 @@ from config import (WIDTH, HEIGHT, FPS, GROUND_Y, INK, WHITE, MUTED, SUBTLE,
                     GLIDE_GRAVITY_MUL, GLIDE_FALL_MUL, DROP_THROUGH_FRAMES,
                     KNOCKBACK_X, KNOCKBACK_Y, SAFE_GROUND_EVERY, TRY_AGAIN_FRAMES,
                     fonts)
-from data import LEVEL_LAYOUTS, LEVEL_THEMES, DECORATIONS, DECOR_SIZES
+from data import (LEVEL_LAYOUTS, LEVEL_THEMES, DECORATIONS, DECOR_SIZES,
+                  MOVER_ROUTES, MOVER_QUESTIONS, make_question_deck)
 from ui import (draw_text, gradient_rect, draw_pill, panel, get_radial_glow,
-                get_smooth_heart, veil, Button, clamp, lerp, blend_color, get_text_image)
+                get_smooth_heart, veil, Button, clamp, lerp, blend_color, get_text_image,
+                wrap_text)
 from audio import AudioManager
 from entities import Player, Particle, FloatingText, MovingPlatform
 from sprites import bank, ROSTER
@@ -53,11 +60,19 @@ PROP_FILE_MAP = {
 }
 PROP_DIRS = (os.path.join("assets", "props"), os.path.join("assets", "sprites"),
              os.path.join("assets", "props", "props"), "assets", "")
-GLOW_SPOTS = {"stone_lantern": (0.5, 0.42), "hanging_lantern": (0.62, 0.55),
-              "shrine": (0.5, 0.55)}
+# Flame positions as fractions of the prop SPRITE (measured from the PNGs);
+# the procedural fallbacks use the same fractions of their box.
+LAMP_SPOTS = {"stone_lantern": [(0.49, 0.44)], "hanging_lantern": [(0.80, 0.53)],
+              "shrine": [(0.17, 0.68), (0.83, 0.68)]}
+LAMP_POOL = {"stone_lantern", "hanging_lantern"}       # cast a light pool on the ground
+WARM, WARM_CORE = (255, 168, 78), (255, 232, 170)
 KNOWN_CHARS = set("=|-M^v~KPG ")
 JUMP_KEYS = (pygame.K_w, pygame.K_UP, pygame.K_SPACE)
 DOWN_KEYS = (pygame.K_s, pygame.K_DOWN)
+GATE_KEYS = (pygame.K_e, pygame.K_RETURN, pygame.K_KP_ENTER)
+ANSWER_KEYS = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4)
+WORLD_SCENES = ("PLAYING", "PAUSED", "SETTINGS", "CONFIRM_MENU", "TRY_AGAIN",
+                "LEVEL_CLEAR", "QUIZ")
 
 
 def _fmt_time(sec):
@@ -101,8 +116,14 @@ def _plain_surface(w, h, color):
     return s
 
 
-def load_level(layout_text):
-    """Parse an ASCII layout. Unknown characters are reported, never crash."""
+def load_level(layout_text, routes=None):
+    """Parse an ASCII layout. Unknown characters are reported, never crash.
+
+    routes: {(row, col_of_leftmost_M): (dx_tiles, dy_tiles)}. A mover listed
+    there is question-gated (starts locked); one that is not listed falls back
+    to the old always-on sideways patrol.
+    """
+    routes = routes or {}
     rows = []
     for ln in layout_text.split("\n"):
         s = ln
@@ -144,7 +165,9 @@ def load_level(layout_text):
                 c0 = c
                 while c < cols and rows[r][c] == "M":
                     c += 1
-                movers.append(MovingPlatform(x, y, c - c0))
+                route = routes.get((r, c0))
+                movers.append(MovingPlatform(x, y, c - c0, route=route,
+                                             locked=route is not None))
                 continue
             if ch == "^":
                 c0 = c
@@ -247,6 +270,10 @@ class Game:
         self.last_safe = None
         self.goal_rect = None
         self.decor_draw = []
+        self.terrain_shadow = None
+        self.quiz = None
+        self.quiz_deck = []
+        self.gate_hint = None
         self.bg_base = self.make_background()
         if self.settings["fullscreen"]:
             self.set_fullscreen(True)
@@ -373,6 +400,11 @@ class Game:
                 if art.get_width() < WIDTH:
                     nh = max(HEIGHT, int(round(art.get_height() * (WIDTH / art.get_width()))))
                     art = pygame.transform.scale(art, (WIDTH, nh))
+                # Darken + cool the painted backdrop so it never competes with
+                # the playable terrain (multiply keeps the alpha channel intact).
+                tint = LEVEL_THEMES[idx].get("bg_tint", (120, 110, 140))
+                art = art.copy()
+                art.fill((*tint, 255), special_flags=pygame.BLEND_RGBA_MULT)
             except (pygame.error, ValueError, OSError) as e:
                 print(f"[game] WARNING background failed ({p}): {e} — procedural sky")
                 art = None
@@ -404,7 +436,8 @@ class Game:
     # ── basics ───────────────────────────────────────────────────
     def new_stats(self):
         mh = MAX_HEARTS + self.character.get("traits", {}).get("bonus_hearts", 0)
-        return {"lives": mh, "max_lives": mh, "time": 0.0, "hits": 0}
+        return {"lives": mh, "max_lives": mh, "time": 0.0, "hits": 0,
+                "answered": 0, "correct": 0}
 
     def get_viewport_rect(self):
         dw, dh = config.screen.get_size()
@@ -592,8 +625,8 @@ class Game:
         return _plain_surface(w, h, (255, 255, 255, 18))
 
     def world_scenery(self, target, frame, cam=0, cam_y=0):
-        if self.sky_surf is not None and self.scene in ("PLAYING", "PAUSED", "SETTINGS",
-                                                        "CONFIRM_MENU", "TRY_AGAIN", "LEVEL_CLEAR"):
+        in_world = self.sky_surf is not None and self.scene in WORLD_SCENES
+        if in_world:
             target.blit(self.sky_surf, (0, 0))
             if self.bg_art is not None:
                 off = -int(clamp(cam * self.bg_par, 0, max(0, self.bg_art.get_width() - WIDTH)))
@@ -612,6 +645,10 @@ class Game:
             yy = y + math.cos(frame * 0.02 + phase) * 5 - cam_y * 0.08
             pygame.draw.circle(target, self.theme["mote"], (int(xx), int(yy)),
                                2 if pulse > 0.75 else 1)
+        if in_world:
+            # Depth haze: pushes the backdrop back so terrain reads as foreground.
+            target.blit(_alpha_grad(WIDTH, HEIGHT, False, 30, 125, self.theme["sky_top"]),
+                        (0, 0))
 
     # ── level lifecycle ──────────────────────────────────────────
     def start_game(self):
@@ -628,19 +665,42 @@ class Game:
         gradient_rect(sky, (0, 0, WIDTH, HEIGHT), th["sky_top"], th["sky_bottom"])
         rng = random.Random(7 + self.level_index * 31)
         for _ in range(60):
-            shade = rng.randint(140, 235)
+            shade = rng.randint(90, 170)
             pygame.draw.circle(sky, (shade, shade, min(255, shade + 18)),
                                (rng.randrange(WIDTH), rng.randrange(10, 320)), 1)
-        cx, cy = 830, 120
-        sky.blit(get_radial_glow(170, th["celestial"], 40, 6), (cx - 170, cy - 170))
-        pygame.draw.circle(sky, th["celestial"], (cx, cy), 40)
+        if self.bg_art is None:
+            # the painted backdrops have their own moon; only draw one here
+            cx, cy = 830, 120
+            sky.blit(get_radial_glow(170, th["celestial"], 26, 6), (cx - 170, cy - 170))
+            pygame.draw.circle(sky, blend_color(th["celestial"], th["sky_top"], 0.25), (cx, cy), 40)
+            # No painted backdrop for this level: low, dark ridges for depth.
+            pygame.draw.polygon(sky, th["ridge_far"],
+                                [(0, 470), (160, 340), (330, 430), (520, 300), (700, 420),
+                                 (880, 320), (1100, 410), (1100, HEIGHT), (0, HEIGHT)])
+            pygame.draw.polygon(sky, th["ridge_mid"],
+                                [(0, 520), (230, 410), (430, 500), (640, 400), (850, 505),
+                                 (1000, 420), (1100, 470), (1100, HEIGHT), (0, HEIGHT)])
+            pygame.draw.polygon(sky, th["ridge_near"],
+                                [(0, 580), (190, 520), (400, 585), (610, 525), (820, 590),
+                                 (980, 540), (1100, 575), (1100, HEIGHT), (0, HEIGHT)])
         self.sky_surf = sky
+
+    def _mover_cells(self):
+        """Tiles a mover rests on/over at any point of its route: no tufts there."""
+        out = set()
+        for m in self.movers:
+            for (x, y) in ((m.ax, m.ay), m.route_end):
+                for cc in range(int(x) // TILE, (int(x) + m.rect.w - 1) // TILE + 1):
+                    out.add((cc, (int(y) + 20) // TILE))
+        return out
 
     def _build_terrain(self):
         self.terrain_surf = None
+        self.terrain_shadow = None
         self.one_way_cap = None
         if not self.tiles:
             self._build_fallback_terrain()
+            self._build_terrain_shadow()
             return
         surf = pygame.Surface((self.level_width, self.level_height), pygame.SRCALPHA)
         cells = set()
@@ -648,27 +708,43 @@ class Game:
             for cc in range(rct.x // TILE, (rct.x + rct.w) // TILE):
                 cells.add((cc, rct.y // TILE))
         T_ = self.tiles
+        # Sheet: 1 grass-mid 2 grass-left 3 grass-right | 4/15 stone fill
+        #        5 stone-left 6 stone-right | 7/8 floating-island caps | 9 grass block
         for (c, r) in cells:
-            up, dn = (c, r - 1) in cells, (c, r + 1) in cells
+            up = (c, r - 1) in cells
             lf, rt = (c - 1, r) in cells, (c + 1, r) in cells
             if not up:
+                # surface row: the only place grass belongs
                 gid = 2 if not lf else (3 if not rt else 1)
-            elif not dn:
-                gid = 7 if not lf else (8 if not rt else 9)
             else:
-                gid = 5 if not lf else (6 if not rt else (4 if (c * 7 + r * 13) % 2 else 15))
+                # everything under a surface is plain stone (previously the
+                # bottom row used grass-topped tiles, painting a second grass
+                # stripe through the middle of the ground)
+                gid = 5 if not lf else (6 if not rt else (4 if (c * 7 + r * 13) % 3 else 15))
             surf.blit(T_[gid - 1], (c * TILE, r * TILE))
+        no_tuft = self._mover_cells()
         for (c, r) in cells:
             hsh = (c * 31 + r * 17) % 97
-            if (c, r - 1) not in cells and hsh % 4 == 0:
+            if ((c, r - 1) not in cells and hsh % 4 == 0 and (c, r - 1) not in no_tuft
+                    and (c, r) not in no_tuft):
                 surf.blit(T_[9 if hsh % 8 else 10], (c * TILE, (r - 1) * TILE))
-            if (c, r + 1) not in cells and (c * 13 + r * 7) % 7 == 0:
+            if (c, r + 1) not in cells and (c, r - 1) not in cells and (c * 13 + r * 7) % 5 == 0:
                 surf.blit(T_[15], (c * TILE, (r + 1) * TILE))
-        grass = T_[0].subsurface(pygame.Rect(0, 0, TILE, max(6, int(TILE * 0.42))))
-        self.one_way_cap = pygame.transform.scale(grass, (TILE, 16))
+        # One-way ledges: a slim lip cut from the grass tiles (left/mid/right
+        # ends) so they read as solid-looking shelves rather than loose grass.
+        lip_h = 22
+        lips = [pygame.transform.scale(T_[g - 1].subsurface(
+                    pygame.Rect(0, 0, TILE, int(TILE * 0.62))), (TILE, lip_h))
+                for g in (2, 1, 3)]
+        self.one_way_cap = lips[1]
+        under = pygame.Surface((TILE, 6), pygame.SRCALPHA)
+        under.fill((0, 0, 0, 70))
         for ow in self.one_way:
-            for cc in range(ow.x // TILE, (ow.x + ow.w) // TILE):
-                surf.blit(self.one_way_cap, (cc * TILE, ow.y - 4))
+            c0, c1 = ow.x // TILE, (ow.x + ow.w) // TILE
+            for cc in range(c0, c1):
+                lip = lips[0] if cc == c0 else (lips[2] if cc == c1 - 1 else lips[1])
+                surf.blit(lip, (cc * TILE, ow.y - 4))
+                surf.blit(under, (cc * TILE, ow.y - 4 + lip_h))
         for (x, y, w) in self.spike_runs_floor:
             n = max(1, w // TILE)
             for i in range(n):
@@ -682,6 +758,20 @@ class Game:
                                            False, True)
                 surf.blit(sp, (x + i * TILE, y))
         self.terrain_surf = surf
+        self._build_terrain_shadow()
+
+    def _build_terrain_shadow(self):
+        """Soft dark silhouette drawn offset behind the terrain: separates the
+        playable layer from the painted backdrop."""
+        self.terrain_shadow = None
+        if self.terrain_surf is None:
+            return
+        try:
+            mask = pygame.mask.from_surface(self.terrain_surf, 60)
+            self.terrain_shadow = mask.to_surface(setcolor=(4, 4, 10, 120),
+                                                  unsetcolor=(0, 0, 0, 0))
+        except (pygame.error, TypeError, AttributeError):
+            self.terrain_shadow = None
 
     def _build_fallback_terrain(self):
         """Procedural terrain used when no tileset exists: ground, ledges, spikes."""
@@ -740,6 +830,11 @@ class Game:
                 y = (dec["row"] + SKY_ROWS) * TILE
             else:
                 y = (dec["row"] + SKY_ROWS) * TILE - ph
+            if t == "waterfall":
+                # Pour all the way down to the first surface under it.
+                below = [s.top for s in self.platforms + self.one_way
+                         if s.left < x + pw and x < s.right and s.top > y + TILE]
+                ph = max(2 * TILE, (min(below) if below else self.level_height) - y)
             if t == "crate":
                 self.crate_solids.append(pygame.Rect(x, y, pw, ph))
             elif t == "rope_bridge":
@@ -751,7 +846,7 @@ class Game:
         self.level_index = int(clamp(level_index, 0, len(LEVEL_LAYOUTS) - 1))
         self.theme = LEVEL_THEMES[self.level_index]
         self.bg_base = self.make_background()
-        d = load_level(LEVEL_LAYOUTS[self.level_index])
+        d = load_level(LEVEL_LAYOUTS[self.level_index], MOVER_ROUTES.get(self.level_index, {}))
         if d["unknown"]:
             leftover = sorted({ch for ch, _r, _c in d["unknown"]})
             print(f"[game] WARNING level {self.level_index + 1} has unknown tiles {leftover} "
@@ -769,8 +864,8 @@ class Game:
         self.last_checkpoint = None
         self._build_decor()
         self.one_way += self.bridge_one_way
-        self._build_sky()
         self.bg_art = self._load_bg_art(self.level_index)
+        self._build_sky()
         if self.bg_art:
             self.bg_par = clamp((self.bg_art.get_width() - WIDTH) / max(1, self.level_width - WIDTH),
                                 0.05, 0.5)
@@ -787,9 +882,12 @@ class Game:
         self.last_safe = (self.player.x, self.player.y)
         self.snap_camera()
         self.stats["lives"] = self.stats["max_lives"]
+        self.quiz = None
+        self.gate_hint = None
+        self.quiz_deck = make_question_deck(MOVER_QUESTIONS[self.level_index % len(MOVER_QUESTIONS)])
         self.particles.clear()
         self.popups.clear()
-        self.banner_timer = 150.0
+        self.banner_timer = 230.0
         self.look = 0.0
         self.scene_fade = 160.0
         self.accumulator = 0.0
@@ -878,17 +976,29 @@ class Game:
 
     # ── physics (one fixed 60 Hz step) ───────────────────────────
     def _move_x(self, amount, solids, ignore=None):
-        """Move horizontally and resolve. Returns True if blocked."""
+        """Move horizontally and resolve. Returns True if blocked.
+        A grounded player steps up onto a mover's 14 px lip instead of
+        bumping into it like a wall."""
         p = self.player
         if not amount:
             return False
         p.x += amount
         p.sync_rect()
         blocked = False
+        mover_ids = {id(m.rect) for m in self.movers}
         for s in solids:
             if s is ignore:
                 continue
             if p.rect.colliderect(s):
+                if (id(s) in mover_ids and p.on_ground
+                        and 0 < p.rect.bottom - s.top <= 16):
+                    old_y = p.rect.y
+                    p.rect.bottom = s.top
+                    if not any(p.rect.colliderect(o) for o in self.platforms
+                               + self.crate_solids):
+                        p.y = float(p.rect.y)
+                        continue
+                    p.rect.y = old_y
                 if amount > 0:
                     p.rect.right = s.left
                 else:
@@ -929,6 +1039,13 @@ class Game:
                     before = p.x
                     if self._move_x(dx, solids, ignore=p.carried_by.rect):
                         p.x = before          # never pushed into a wall
+                        p.sync_rect()
+                dy = p.carried_by.last_dy     # lifts and diagonal skiffs
+                if dy:
+                    p.y += dy
+                    p.sync_rect()
+                    if dy < 0 and any(p.rect.colliderect(s) for s in static):
+                        p.y -= dy             # head would clip a ceiling: let it pass
                         p.sync_rect()
 
         if self._move_x(p.vx, solids):
@@ -980,18 +1097,22 @@ class Game:
         p.on_one_way = False
         p.carried_by = None
         landed = False
+        land_top = None
         for s in solids:
             if p.rect.colliderect(s):
                 if p.vel_y >= 0 and prev_bottom <= s.top + 14:
-                    p.rect.bottom = s.top
-                    p.y = float(p.rect.y)
-                    landed = True
-                    break
+                    # several candidates (mover resting on a ledge): take the higher
+                    if land_top is None or s.top < land_top:
+                        land_top = s.top
                 elif p.vel_y < 0 and p.rect.top >= s.bottom - 14:
                     p.rect.top = s.bottom
                     p.y = float(p.rect.y)
                     p.vel_y = 0.0
                     p.jump_cut_ready = False
+        if land_top is not None:
+            p.rect.bottom = land_top
+            p.y = float(p.rect.y)
+            landed = True
         if not landed and p.drop_timer == 0:
             for ow in self.one_way:
                 if p.vel_y >= 0 and prev_bottom <= ow.top + 10 and p.rect.colliderect(ow):
@@ -1038,11 +1159,18 @@ class Game:
         self._step_count += 1
         self.stats["time"] += PHYSICS_DT
         self.banner_timer = max(0.0, self.banner_timer - 1.0)
+        p = self.player
         for m in self.movers:
             m.update()
+            # Never crush: a mover that would push into a player who isn't
+            # standing on top of it simply waits (like a safe elevator).
+            if (p is not None and p.carried_by is not m and m.rect.colliderect(p.rect)
+                    and p.rect.bottom > m.rect.top + 14):
+                m.undo()
         self.update_player()
         if self.scene != "PLAYING":
             return
+        self.gate_hint = self._find_gate()
         self.update_camera()
         pr = self.player.rect.inflate(-6, -6)
         for cp in self.checkpoints:
@@ -1061,6 +1189,74 @@ class Game:
             self.accumulator = 0.0
             return
         self._update_fx()
+
+    # ── question gates ───────────────────────────────────────────
+    def _gate_zone(self, m):
+        """Standing on a locked mover, or right beside it, offers the question."""
+        h = self.player.h if self.player else 52
+        return pygame.Rect(m.rect.x - 30, m.rect.y - h - 12, m.rect.w + 60, h + 30)
+
+    def _find_gate(self):
+        p = self.player
+        if p is None or not p.on_ground:
+            return None
+        for m in self.movers:
+            if m.locked and p.rect.colliderect(self._gate_zone(m)):
+                return m
+        return None
+
+    def gate_counts(self):
+        gated = [m for m in self.movers if not getattr(m, "_legacy", False)]
+        return sum(1 for m in gated if not m.locked), len(gated)
+
+    def _next_question(self):
+        if not self.quiz_deck:
+            self.quiz_deck = make_question_deck(
+                MOVER_QUESTIONS[self.level_index % len(MOVER_QUESTIONS)])
+        return self.quiz_deck.pop()
+
+    def open_quiz(self, mover):
+        # The same question waits on the platform until it is answered, so
+        # backing out with ESC can't be used to re-roll an easier one.
+        if mover.pending_question is None:
+            mover.pending_question = self._next_question()
+        self.player.vx = 0.0
+        self.quiz = {"mover": mover, "q": mover.pending_question, "sel": 0,
+                     "state": "ask", "picked": None}
+        self.change_scene("QUIZ")
+
+    def answer_quiz(self, idx):
+        qz = self.quiz
+        if not qz or qz["state"] != "ask" or not 0 <= idx < len(qz["q"]["options"]):
+            return
+        qz["picked"] = idx
+        qz["mover"].pending_question = None
+        self.stats["answered"] += 1
+        if idx == qz["q"]["answer"]:
+            qz["state"] = "right"
+            self.stats["correct"] += 1
+            self.audio.play("check")
+        else:
+            qz["state"] = "wrong"
+            self.audio.play("wrong")
+
+    def close_quiz(self):
+        qz, self.quiz = self.quiz, None
+        self.change_scene("PLAYING")
+        if not qz or qz["state"] == "ask":
+            return                                   # backed out: no penalty
+        m, p = qz["mover"], self.player
+        if qz["state"] == "right":
+            m.activate()
+            self.add_popup("GATE OPEN", m.rect.centerx, m.rect.y - 74, MINT)
+            self.add_particle_burst(m.rect.centerx, m.rect.y, self.theme["accent"], 34, 4.2)
+            self.audio.play("level")
+        else:
+            self.audio.play("hurt")
+            if self._lose_heart():
+                p.hurt_timer = float(HURT_FRAMES)
+                self.shake = 7.0
+                self.add_popup("WRONG  -1 HEART", p.rect.centerx, p.rect.y - 40, CORAL)
 
     def _update_fx(self):
         for pt in self.particles:
@@ -1180,30 +1376,380 @@ class Game:
         else:
             pygame.draw.rect(world, stone, (x, y, w, h), border_radius=4)
 
+    def _sprite_box(self, t, pw, ph):
+        """Where _decor_surf puts the scaled sprite inside its box: (ox, oy, w, h)."""
+        base = self.decor_sprites.get(t)
+        if base is None:
+            return 0, 0, pw, ph
+        bw, bh = base.get_size()
+        s = min(pw / max(1, bw), ph / max(1, bh))
+        nw, nh = max(1, int(round(bw * s))), max(1, int(round(bh * s)))
+        return (pw - nw) // 2, ph - nh, nw, nh
+
     def _draw_decor_item(self, world, d, cx, cy):
         x, y = d["x"] - cx, d["y"] - cy
-        if x + d["w"] < -8 or x > WIDTH + 8 or y + d["h"] < -8 or y > HEIGHT + 8:
+        if d["type"] == "waterfall":
+            if not (x + d["w"] < -40 or x > WIDTH + 40 or y + d["h"] < -40 or y > HEIGHT + 40):
+                self._draw_waterfall(world, d, int(x), int(y))
+            return
+        if x + d["w"] < -60 or x > WIDTH + 60 or y + d["h"] < -60 or y > HEIGHT + 60:
             return
         surf = self._decor_surf(d["type"], d["w"], d["h"])
         if surf is not None:
             world.blit(surf, (int(x), int(y)))
         else:
             self._decor_art(world, d["type"], int(x), int(y), d["w"], d["h"])
-        spot = GLOW_SPOTS.get(d["type"])
-        if spot:
-            gx = int(x + d["w"] * spot[0])
-            gy = int(y + d["h"] * spot[1])
-            flick = 0.7 + 0.3 * math.sin(self.frame * 0.21 + d["x"] * 0.7)
-            world.blit(get_radial_glow(24, (255, 190, 90), int(56 * flick), 4), (gx - 24, gy - 24))
-        if d["type"] == "waterfall":
-            streak = _plain_surface(2, 16, (240, 246, 255, 150))
-            for i in range(3):
-                sx = int(x + 4 + i * max(1, (d["w"] - 8) // 2))
-                sy = int(y + (self.frame * 4 + i * 41) % max(1, d["h"] - 18))
-                world.blit(streak, (sx, sy))
-            pulse = 0.5 + 0.5 * math.sin(self.frame * 0.12 + d["x"])
-            world.blit(_plain_surface(d["w"] + 16, 14, (235, 240, 252, int(70 * pulse))),
-                       (int(x) - 8, int(y + d["h"]) - 10))
+        if d["type"] in LAMP_SPOTS:
+            self._draw_lamp_light(world, d, x, y)
+
+    # ── lamps: warm layered glow, flicker, ground pool, rising embers ──
+    def _draw_lamp_light(self, world, d, x, y):
+        ox, oy, sw, sh = self._sprite_box(d["type"], d["w"], d["h"])
+        seed = d["x"] * 0.37 + d["y"] * 0.11
+        f = self.frame
+        flick = (0.80 + 0.12 * math.sin(f * 0.19 + seed)
+                 + 0.08 * math.sin(f * 0.53 + seed * 2.3))
+        q = lambda a: int(a * flick) // 4 * 4          # quantised: keeps glow cache small
+        if d["type"] in LAMP_POOL:
+            pool = _MENU_CACHE.get(("pool",))
+            if pool is None:
+                pool = pygame.Surface((96, 22), pygame.SRCALPHA)
+                for i in range(6):
+                    k = i / 6
+                    pygame.draw.ellipse(pool, (*WARM, int(10 + 12 * k)),
+                                        (int(48 * k), int(11 * k), int(96 - 96 * k), int(22 - 22 * k)))
+                _MENU_CACHE[("pool",)] = pool
+            pool = pool.copy()
+            pool.set_alpha(int(255 * flick))
+            world.blit(pool, (int(x + d["w"] / 2 - 48), int(y + d["h"] - 12)))
+        for fx, fy in LAMP_SPOTS[d["type"]]:
+            gx = int(x + ox + sw * fx)
+            gy = int(y + oy + sh * fy)
+            world.blit(get_radial_glow(54, WARM, q(34), 6), (gx - 54, gy - 54))
+            world.blit(get_radial_glow(18, WARM_CORE, q(110), 4), (gx - 18, gy - 18))
+            # two embers drifting up out of each flame
+            for k in range(2):
+                life = ((f * 0.55 + seed * 40 + k * 47) % 70) / 70.0
+                ex = gx + math.sin(f * 0.045 + seed + k * 2.1) * (3 + 6 * life)
+                ey = gy - 6 - life * 46
+                a = int(200 * (1.0 - life))
+                if a > 8:
+                    world.blit(_plain_surface(2, 2, (*WARM_CORE, a // 8 * 8)), (int(ex), int(ey)))
+
+    # ── waterfall: animated sheet that falls to the surface below ──
+    def _waterfall_body(self, w, h):
+        key = ("wf", w, h, self.level_index)
+        hit = self._decor_scaled.get(key)
+        if hit is not None:
+            return hit
+        mote = self.theme["mote"]
+        deep = blend_color((44, 78, 150), mote, 0.18)
+        light = blend_color((128, 172, 226), mote, 0.22)
+        s = pygame.Surface((w, h), pygame.SRCALPHA)
+        for xx in range(w):
+            e = min(xx, w - 1 - xx) / max(1.0, w / 2)          # 0 at edges, 1 at centre
+            col = blend_color(deep, light, min(1.0, e * 1.4))
+            pygame.draw.line(s, (*col, int(105 + 85 * min(1.0, e * 2.5))), (xx, 0), (xx, h - 1))
+        # fade in at the lip, darker at the edges
+        for yy in range(min(10, h)):
+            pygame.draw.line(s, (232, 244, 255, int(200 - yy * 18)), (0, yy), (w - 1, yy))
+        pygame.draw.line(s, (*deep, 220), (0, 0), (0, h - 1), 2)
+        pygame.draw.line(s, (*deep, 220), (w - 1, 0), (w - 1, h - 1), 2)
+        self._decor_scaled[key] = s
+        return s
+
+    def _draw_waterfall(self, world, d, x, y):
+        w, h, f = d["w"], d["h"], self.frame
+        world.blit(self._waterfall_body(w, h), (x, y))
+        # falling streaks in lanes, each at its own speed
+        for i, lane in enumerate(range(5, w - 4, 7)):
+            speed = 5.0 + (i * 37 % 5) * 0.8
+            length = 14 + (i * 23 % 4) * 6
+            for j in range(h // 70 + 2):
+                yy = (f * speed + i * 53 + j * 70) % (h + length) - length
+                top, bot = max(0, yy), min(h, yy + length)
+                if bot - top > 2:
+                    world.blit(_plain_surface(2, int(bot - top), (226, 238, 255, 105)),
+                               (x + lane, int(y + top)))
+
+    def _draw_waterfall_foam(self, world, d, cx, cy):
+        """Drawn after the terrain so the splash sits on top of the surface."""
+        x, y, w, h, f = d["x"] - cx, d["y"] - cy, d["w"], d["h"], self.frame
+        bx, by = int(x + w / 2), int(y + h)
+        if bx < -80 or bx > WIDTH + 80 or by < -40 or by > HEIGHT + 60:
+            return
+        world.blit(get_radial_glow(w, (200, 224, 255), 46, 4), (bx - w, by - w + 6))
+        foam = pygame.Surface((w + 36, 30), pygame.SRCALPHA)
+        n = max(3, w // 10 + 2)
+        for k in range(n):
+            fx = 18 + k * w / (n - 1)
+            r = 6 + 3 * math.sin(f * 0.22 + k * 1.7)
+            pygame.draw.circle(foam, (226, 238, 255, 190), (int(fx), 18), max(3, int(r)))
+            pygame.draw.circle(foam, (255, 255, 255, 230), (int(fx), 16), max(2, int(r * 0.5)))
+        world.blit(foam, (int(x) - 18, by - 22))
+        for k in range(7):
+            t = ((f * 0.022) + k / 7.0) % 1.0
+            sx = bx + (k - 3) * (w / 5) * t * 1.6
+            sy = by - 10 - 70 * t * (1 - t) * 1.2
+            world.blit(_plain_surface(3, 3, (235, 244, 255, int(220 * (1 - t)) // 8 * 8)),
+                       (int(sx), int(sy)))
+
+    def _draw_mover(self, world, m, cx, cy):
+        accent = self.theme["accent"]
+        w, h = m.rect.w, m.rect.h
+        if not getattr(m, "_legacy", False) and m.length > 0:
+            # Route preview: dotted path plus a ghost outline of the far stop.
+            ax, ay = m.ax + w / 2 - cx, m.ay + h / 2 - cy
+            bx, by = m.bx + w / 2 - cx, m.by + h / 2 - cy
+            n = max(2, int(m.length // 22))
+            dot = (*accent, 70 if m.locked else 40)
+            for i in range(1, n):
+                k = i / n
+                px, py = int(ax + (bx - ax) * k), int(ay + (by - ay) * k)
+                if -10 < px < WIDTH + 10 and -10 < py < HEIGHT + 10:
+                    world.blit(_plain_surface(4, 4, dot), (px - 2, py - 2))
+            if m.locked:
+                ghost = pygame.Rect(int(m.bx - cx), int(m.by - cy), w, h)
+                pygame.draw.rect(world, blend_color(accent, (20, 20, 30), 0.45), ghost, 1,
+                                 border_radius=4)
+        rx, ry = int(m.rect.x - cx), int(m.rect.y - cy)
+        if rx + w < -20 or rx > WIDTH + 20 or ry + h < -40 or ry > HEIGHT + 20:
+            return
+        if m.locked:
+            pulse = 0.5 + 0.5 * math.sin(self.frame * 0.08 + m.ax * 0.01)
+            world.blit(get_radial_glow(30, accent, int(16 + 24 * pulse), 4),
+                       (rx + w // 2 - 30, ry + h // 2 - 30))
+            pygame.draw.rect(world, (34, 30, 48), (rx - 2, ry - 2, w + 4, h + 6), border_radius=5)
+            pygame.draw.rect(world, (78, 70, 102), (rx, ry, w, h), border_radius=4)
+            pygame.draw.line(world, blend_color((120, 110, 150), accent, 0.4 * pulse),
+                             (rx + 2, ry + 2), (rx + w - 2, ry + 2), 2)
+            # rune plate with a "?" in the middle
+            mx = rx + w // 2
+            pygame.draw.circle(world, (24, 20, 36), (mx, ry + h // 2), 11)
+            pygame.draw.circle(world, blend_color(accent, WHITE, 0.2 * pulse), (mx, ry + h // 2), 11, 2)
+            draw_text(world, "?", fonts.SMALL, accent, (mx, ry + h // 2), center=True)
+        else:
+            if m.glow > 0:
+                world.blit(get_radial_glow(48, accent, int(70 * m.glow), 4),
+                           (rx + w // 2 - 48, ry + h // 2 - 48))
+            pygame.draw.rect(world, (96, 66, 48), (rx - 2, ry - 2, w + 4, h + 6), border_radius=5)
+            pygame.draw.rect(world, (176, 138, 100), (rx, ry, w, h), border_radius=4)
+            pygame.draw.line(world, accent, (rx + 2, ry + 2), (rx + w - 2, ry + 2), 2)
+            for gx in range(rx + 14, rx + w - 8, 26):
+                pygame.draw.circle(world, blend_color(accent, WHITE, 0.3), (gx, ry + h // 2 + 1), 2)
+
+    def _draw_gate_hint(self, world, m, cx, cy):
+        bob = math.sin(self.frame * 0.1) * 3
+        label = "E  ·  ANSWER TO START"
+        img = get_text_image(label, fonts.TINY, WHITE)
+        pill = pygame.Rect(0, 0, img.get_width() + 30, 28)
+        pill.midbottom = (int(m.rect.centerx - cx), int(m.rect.y - cy - 66 + bob))
+        pill.clamp_ip(pygame.Rect(8, 8, WIDTH - 16, HEIGHT - 16))
+        draw_pill(world, pill, (16, 26, 42, 230), (*self.theme["accent"], 160), shadow=False)
+        world.blit(img, img.get_rect(center=pill.center))
+
+    # ── quiz panel ───────────────────────────────────────────────
+    QUIZ_TOPICS = ("PYTHON BASICS", "CONTROL FLOW", "COLLECTIONS", "FUNCTIONS",
+                   "STRINGS · ERRORS · CLASSES")
+    _PY_KW = {"def", "return", "if", "else", "elif", "for", "while", "in", "and", "or",
+              "not", "try", "except", "finally", "class", "lambda", "True", "False",
+              "None", "import", "from", "as", "pass", "break", "continue"}
+    _PY_FN = {"print", "len", "int", "str", "float", "range", "list", "set", "dict",
+              "type", "tuple", "upper", "split", "append", "get"}
+
+    def _code_tokens(self, line):
+        """Tiny Python highlighter: yields (text, colour)."""
+        import re
+        out = []
+        for m in re.finditer(r'(#.*$)|(f?"[^"]*"|f?\'[^\']*\')|(\b\d+(?:\.\d+)?\b)'
+                             r'|([A-Za-z_]\w*)|(\s+)|(.)', line):
+            com, st, num, word, sp, op = m.groups()
+            if com:
+                out.append((com, (110, 128, 150)))
+            elif st:
+                out.append((st, (152, 220, 140)))
+            elif num:
+                out.append((num, (246, 180, 110)))
+            elif word:
+                col = ((206, 150, 255) if word in self._PY_KW else
+                       (110, 196, 250) if word in self._PY_FN else (226, 232, 242))
+                out.append((word, col))
+            else:
+                out.append((sp or op, (190, 200, 214)))
+        return out
+
+    def _draw_code_box(self, cv, rect, lines, accent):
+        font = fonts.CODE_FONT
+        lh = font.get_linesize() + 3
+        pygame.draw.rect(cv, (6, 10, 19), rect, border_radius=12)
+        bar = pygame.Rect(rect.x, rect.y, rect.w, 26)
+        pygame.draw.rect(cv, (18, 26, 40), bar, border_top_left_radius=12,
+                         border_top_right_radius=12)
+        for i, c in enumerate(((242, 98, 112), (246, 196, 92), (86, 214, 166))):
+            pygame.draw.circle(cv, c, (bar.x + 18 + i * 16, bar.centery), 5)
+        draw_text(cv, "gate.py", fonts.TINY, MUTED, (bar.centerx, bar.centery), center=True)
+        pygame.draw.rect(cv, blend_color((60, 84, 112), accent, 0.25), rect, 1, border_radius=12)
+        gutter = rect.x + 40
+        pygame.draw.line(cv, (30, 42, 60), (gutter, bar.bottom + 4), (gutter, rect.bottom - 8), 1)
+        y = bar.bottom + 10
+        for n, ln in enumerate(lines, 1):
+            draw_text(cv, str(n), font, (70, 88, 110), (gutter - 10, y + lh // 2 - 1), right=True)
+            x = gutter + 14
+            for tok, col in self._code_tokens(ln):
+                img = get_text_image(tok, font, col)
+                cv.blit(img, (x, y))
+                x += img.get_width()
+            y += lh
+
+    def _draw_check(self, cv, center, color, ok):
+        x, y = center
+        pygame.draw.circle(cv, color, center, 11)
+        if ok:
+            pygame.draw.lines(cv, INK, False, [(x - 5, y), (x - 1, y + 4), (x + 6, y - 4)], 3)
+        else:
+            pygame.draw.line(cv, INK, (x - 4, y - 4), (x + 4, y + 4), 3)
+            pygame.draw.line(cv, INK, (x + 4, y - 4), (x - 4, y + 4), 3)
+
+    def _draw_option_card(self, cv, i, rect, text, state, qz, accent):
+        """One answer card. Registers an invisible Button for mouse clicks."""
+        key = f"quiz_opt{i}"
+        b = self.button_cache.get(key)
+        if not isinstance(b, Button):
+            b = self.button_cache[key] = Button(key, rect, "", f"quiz_a{i}", accent)
+        b.rect, b.action = pygame.Rect(rect), f"quiz_a{i}"
+        b.update(self.mouse_pos, self.dt_scale, selected=(state == "ask" and i == qz["sel"]))
+        self.buttons.append(b)
+        q = qz["q"]
+        hot = b.hover if state == "ask" else 0.0
+        if state == "ask":
+            edge = blend_color((70, 92, 120), accent, hot)
+            fill = blend_color((20, 32, 50), blend_color((20, 32, 50), accent, 0.22), hot)
+            badge, txt = blend_color((40, 56, 80), accent, hot), WHITE
+        elif i == q["answer"]:
+            edge, fill, badge, txt = MINT, (18, 52, 50), MINT, WHITE
+        elif i == qz["picked"]:
+            edge, fill, badge, txt = CORAL, (60, 24, 36), CORAL, WHITE
+        else:
+            edge, fill, badge, txt = (44, 56, 74), (16, 24, 38), (40, 50, 66), SUBTLE
+        r = pygame.Rect(rect).move(0, -int(round(hot * 3)))
+        if hot > 0.05:
+            cv.blit(get_radial_glow(r.h, accent, int(30 * hot) // 4 * 4, 4),
+                    (r.centerx - r.h, r.centery - r.h))
+        pygame.draw.rect(cv, (4, 8, 16), r.move(0, 4), border_radius=14)
+        pygame.draw.rect(cv, fill, r, border_radius=14)
+        pygame.draw.rect(cv, edge, r, 2 if (hot > 0.3 or state != "ask") else 1, border_radius=14)
+        bc = (r.x + 26, r.centery)
+        if state != "ask" and i in (q["answer"], qz["picked"]):
+            self._draw_check(cv, bc, badge, i == q["answer"])
+        else:
+            pygame.draw.circle(cv, badge, bc, 13)
+            draw_text(cv, str(i + 1), fonts.SMALL, WHITE, bc, center=True)
+        codey = any(ch in text for ch in "[]{}()'\"=_.") or text.isdigit()
+        font = fonts.CODE_FONT if codey else fonts.BODY
+        draw_text(cv, text, font, txt, (r.x + 50, r.centery), valign="middle")
+
+    def draw_quiz(self):
+        self.draw_game_world()
+        qz = self.quiz
+        if qz is None:
+            return
+        cv = config.canvas
+        q, state = qz["q"], qz["state"]
+        accent = self.theme["accent"]
+        border = MINT if state == "right" else (CORAL if state == "wrong" else accent)
+        if "t0" not in qz:
+            qz["t0"] = self.frame
+        e = clamp((self.frame - qz["t0"]) / 14.0, 0.0, 1.0)
+        ease = 1.0 - (1.0 - e) ** 3
+        cv.blit(veil(int(190 * ease)), (0, 0))
+
+        code = q.get("code", "").split("\n") if q.get("code") else []
+        qlines = wrap_text(q["q"], fonts.MED, 640)
+        lh = fonts.CODE_FONT.get_linesize() + 3
+        code_h = (len(code) * lh + 46) if code else 0
+        body_h = 70 + len(qlines) * 32 + (code_h + 18 if code else 6) + 2 * 62 + 14
+        why_lines = wrap_text(q["why"], fonts.BODY, 780 - 150)[:2]
+        foot_h = (80 + 40 + 22 * len(why_lines)) if state != "ask" else 70
+        ph = min(HEIGHT - 30, body_h + foot_h)
+        pr = pygame.Rect(0, 0, 780, ph)
+        pr.center = (WIDTH // 2, HEIGHT // 2 + int((1.0 - ease) * 40))
+
+        cv.blit(get_radial_glow(340, border, 26, 6), (pr.centerx - 340, pr.centery - 340))
+        panel(cv, pr, (12, 20, 34, 248), (*border, 150), 26, True)
+        # header strip
+        head = pygame.Rect(pr.x, pr.y, pr.w, 46)
+        gradient_rect(cv, head, (*accent, 70), (*accent, 0), 26)
+        opened, total = self.gate_counts()
+        gated = [mm for mm in self.movers if not getattr(mm, "_legacy", False)]
+        num = gated.index(qz["mover"]) + 1 if qz["mover"] in gated else opened + 1
+        badge = pygame.Rect(pr.x + 22, pr.y + 12, 150, 26)
+        draw_pill(cv, badge, (*blend_color(accent, INK, 0.55), 240), (*accent, 200), shadow=False)
+        draw_text(cv, f"PYTHON GATE {num}/{total}", fonts.TINY, WHITE, badge.center, center=True)
+        topic = self.QUIZ_TOPICS[self.level_index % len(self.QUIZ_TOPICS)]
+        draw_text(cv, topic, fonts.TINY, blend_color(accent, WHITE, 0.45),
+                  (badge.right + 14, badge.centery), valign="middle")
+        for i in range(total):
+            c = (pr.right - 30 - (total - 1 - i) * 20, badge.centery)
+            if i < opened:
+                pygame.draw.circle(cv, MINT, c, 6)
+            elif gated[i] is qz["mover"]:
+                pygame.draw.circle(cv, accent, c, 6)
+                pygame.draw.circle(cv, WHITE, c, 6, 1)
+            else:
+                pygame.draw.circle(cv, SUBTLE, c, 6, 2)
+        # lives
+        hx = pr.right - 30 - total * 20 - 18
+        for i in range(self.stats["lives"]):
+            img = get_smooth_heart(14, CORAL, filled=True)
+            cv.blit(img, img.get_rect(center=(hx - i * 18, badge.centery)))
+
+        y = pr.y + 64
+        for line in qlines:
+            draw_text(cv, line, fonts.MED, WHITE, (WIDTH // 2, y + 12), center=True, shadow=True)
+            y += 32
+        if code:
+            box = pygame.Rect(pr.x + 120, y + 6, pr.w - 240, code_h)
+            self._draw_code_box(cv, box, code, accent)
+            y = box.bottom + 18
+        else:
+            y += 10
+        bw, bh, gap = 345, 50, 14
+        x0 = WIDTH // 2 - bw - gap // 2
+        for i, opt in enumerate(q["options"]):
+            r = pygame.Rect(x0 + (i % 2) * (bw + gap), y + (i // 2) * (bh + 12), bw, bh)
+            self._draw_option_card(cv, i, r, opt, state, qz, accent)
+        y += 2 * (bh + 12) + 4
+
+        if state == "ask":
+            hints = (("1-4", "ANSWER"), ("ARROWS", "MOVE"), ("ENTER", "PICK"), ("ESC", "BACK"))
+            total_w = sum(fonts.TINY.size(k)[0] + fonts.TINY.size(v)[0] + 40 for k, v in hints)
+            hx = WIDTH // 2 - total_w // 2
+            hy = pr.bottom - 30
+            for k, v in hints:
+                kw = fonts.TINY.size(k)[0] + 14
+                cap = pygame.Rect(hx, hy - 11, kw, 22)
+                pygame.draw.rect(cv, (30, 42, 60), cap.move(0, 2), border_radius=6)
+                pygame.draw.rect(cv, (48, 64, 88), cap, border_radius=6)
+                draw_text(cv, k, fonts.TINY, WHITE, cap.center, center=True)
+                draw_text(cv, v, fonts.TINY, MUTED, (cap.right + 6, hy), valign="middle")
+                hx = cap.right + 6 + fonts.TINY.size(v)[0] + 20
+            draw_text(cv, "Right answer starts the platform  ·  wrong answer costs a heart",
+                      fonts.TINY, SUBTLE, (WIDTH // 2, pr.bottom - 54), center=True)
+        else:
+            right = state == "right"
+            col = MINT if right else CORAL
+            box = pygame.Rect(pr.x + 40, y + 4, pr.w - 80, 40 + 22 * len(why_lines))
+            pygame.draw.rect(cv, (*blend_color(col, (12, 20, 34), 0.82),), box, border_radius=14)
+            pygame.draw.rect(cv, col, box, 1, border_radius=14)
+            self._draw_check(cv, (box.x + 26, box.y + 20), col, right)
+            head = "CORRECT!  THE PLATFORM AWAKENS" if right else "NOT QUITE  ·  YOU LOSE A HEART"
+            draw_text(cv, head, fonts.SMALL, col, (box.x + 48, box.y + 20), valign="middle")
+            for n, why in enumerate(why_lines):
+                draw_text(cv, why, fonts.BODY, (214, 224, 236),
+                          (box.x + 48, box.y + 44 + n * 22), valign="middle")
+            self.make_button("quiz_continue", (WIDTH // 2 - 120, pr.bottom - 56, 240, 42),
+                             "CONTINUE" if right else "GOT IT", "quiz_continue",
+                             col, selected=True)
 
     def get_shadow_surface_y(self):
         cx = self.player.rect.centerx
@@ -1225,6 +1771,8 @@ class Game:
         for d in self.decor_draw:
             if d["type"] == "waterfall":
                 self._draw_decor_item(world, d, cx, cy)
+        if self.terrain_shadow is not None:
+            world.blit(self.terrain_shadow, (-cx + 5, -cy + 7))
         if self.terrain_surf is not None:
             world.blit(self.terrain_surf, (-cx, -cy))
         else:
@@ -1244,14 +1792,12 @@ class Game:
             pygame.draw.line(world, (190, 224, 255), (int(rx), int(ry) + 8 + wave),
                              (int(rx + w.w), int(ry) + 8 + wave), 2)
         for m in self.movers:
-            rx, ry = int(m.rect.x - cx), int(m.rect.y - cy)
-            pygame.draw.rect(world, (96, 66, 48), (rx - 2, ry - 2, m.rect.w + 4, m.rect.h + 6),
-                             border_radius=5)
-            pygame.draw.rect(world, (176, 138, 100), (rx, ry, m.rect.w, m.rect.h), border_radius=4)
-            pygame.draw.line(world, (216, 182, 138), (rx + 2, ry + 2), (rx + m.rect.w - 2, ry + 2), 2)
+            self._draw_mover(world, m, cx, cy)
         for d in self.decor_draw:
             if d["type"] in ("crate", "rope_bridge"):
                 self._draw_decor_item(world, d, cx, cy)
+            elif d["type"] == "waterfall":
+                self._draw_waterfall_foam(world, d, cx, cy)
         for cp in self.checkpoints:
             x, y = int(cp["x"] - cx), int(cp["ground_y"] - cy)
             if x < -40 or x > WIDTH + 40:
@@ -1274,6 +1820,8 @@ class Game:
                                                (gx + 8, gy - 26)])
         if self.player:
             self.player.draw(world, self.frame, self.get_shadow_surface_y(), cx, cy)
+        if self.gate_hint is not None and self.scene == "PLAYING":
+            self._draw_gate_hint(world, self.gate_hint, cx, cy)
         for pt in self.particles:
             pt.draw(world, cx, cy)
         for pp in self.popups:
@@ -1290,12 +1838,17 @@ class Game:
         t = self.banner_timer
         if t <= 0:
             return
-        a = clamp(min(t / 30.0, (150.0 - t) / 20.0), 0.0, 1.0)
+        a = clamp(min(t / 30.0, (230.0 - t) / 20.0), 0.0, 1.0)
         title = f"TRIAL {self.level_index + 1}  ·  {self.theme['name'].upper()}"
         for color, off in (((6, 10, 18), (2, 2)), (WHITE, (0, 0))):
             img = get_text_image(title, fonts.MED, color).copy()
             img.set_alpha(int(255 * a))
             config.canvas.blit(img, img.get_rect(center=(WIDTH // 2 + off[0], 122 + off[1])))
+        sub = "Glowing  ?  platforms are locked: stand on one and press E to answer a Python question"
+        for color, off in (((6, 10, 18), (1, 1)), (GOLD_SOFT, (0, 0))):
+            img = get_text_image(sub, fonts.BODY, color).copy()
+            img.set_alpha(int(235 * a))
+            config.canvas.blit(img, img.get_rect(center=(WIDTH // 2 + off[0], 156 + off[1])))
 
     def draw_hud(self):
         n_hearts = self.stats.get("max_lives", MAX_HEARTS)
@@ -1315,7 +1868,20 @@ class Game:
                   fonts.SMALL, self.theme["accent"], (prog.x + 22, prog.centery), valign="middle")
         draw_text(config.canvas, _fmt_time(self.stats["time"]), fonts.SMALL, WHITE,
                   (prog.right - 22, prog.centery), right=True)
-        chip = pygame.Rect(20, HEIGHT - 46, 196, 32)
+        opened, total = self.gate_counts()
+        if total:
+            gp = pygame.Rect(WIDTH - 252, 72, 232, 34)
+            draw_pill(config.canvas, gp, (16, 26, 42, 210), (*self.theme["accent"], 70), shadow=False)
+            draw_text(config.canvas, "PYTHON GATES", fonts.TINY, MUTED,
+                      (gp.x + 18, gp.centery), valign="middle")
+            for i in range(total):
+                c = (gp.right - 22 - (total - 1 - i) * 22, gp.centery)
+                if i < opened:
+                    pygame.draw.circle(config.canvas, MINT, c, 7)
+                else:
+                    pygame.draw.circle(config.canvas, SUBTLE, c, 7, 2)
+        chip_label = f"{self.character['name']} · {self.character['short']}"
+        chip = pygame.Rect(20, HEIGHT - 46, max(196, 84 + fonts.TINY.size(chip_label)[0]), 32)
         draw_pill(config.canvas, chip, (16, 26, 42, 210), (*self.character["accent"], 90),
                   shadow=False)
         if bank.has(self.character["id"]):
@@ -1324,8 +1890,7 @@ class Game:
                       44, HEIGHT - 17, 26, facing=1)
         else:
             draw_fallback_hero(config.canvas, self.character, 44, HEIGHT - 17, 26, self.frame)
-        draw_text(config.canvas, f"{self.character['name']} · {self.character['short']}",
-                  fonts.TINY, WHITE, (64, chip.centery), valign="middle")
+        draw_text(config.canvas, chip_label, fonts.TINY, WHITE, (64, chip.centery), valign="middle")
 
     # ── buttons / settings / pause / end ─────────────────────────
     def make_button(self, key, rect, label, action, accent=GOLD, selected=False):
@@ -1454,6 +2019,8 @@ class Game:
             self.draw_settings()
         elif self.scene == "PLAYING":
             self.draw_game_world()
+        elif self.scene == "QUIZ":
+            self.draw_quiz()
         elif self.scene == "PAUSED":
             self.draw_pause()
         elif self.scene == "CONFIRM_MENU":
@@ -1470,7 +2037,8 @@ class Game:
                           else f"Best time {_fmt_time(self.best_time or 0)}"), GOLD,
                 [("victory_again", (415, 392, 270, 46), "PLAY AGAIN", "retry", GOLD),
                  ("victory_menu", (415, 450, 270, 44), "MAIN MENU", "menu", BLUE)],
-                f"TIME {_fmt_time(self.stats['time'])}   ·   HITS {self.stats['hits']}")
+                f"TIME {_fmt_time(self.stats['time'])}  ·  HITS {self.stats['hits']}  ·  "
+                f"PYTHON {self.stats['correct']}/{self.stats['answered']}")
         if self.scene_fade > 0:
             config.canvas.blit(veil(int(self.scene_fade)), (0, 0))
             self.scene_fade = max(0.0, self.scene_fade - 14.0 * self.dt_scale)
@@ -1521,6 +2089,10 @@ class Game:
             self.change_scene("MENU")
         elif action == "menu_cancel":
             self.change_scene("PAUSED")
+        elif action.startswith("quiz_a"):
+            self.answer_quiz(int(action[6:]))
+        elif action in ("quiz_continue", "quiz_back"):
+            self.close_quiz()
         elif action == "quit":
             self.quit()
 
@@ -1601,12 +2173,16 @@ class Game:
         elif self.scene == "PLAYING":
             if key in (pygame.K_ESCAPE, pygame.K_p):
                 self.change_scene("PAUSED")
+            elif key in GATE_KEYS and self.gate_hint is not None and self.player:
+                self.open_quiz(self.gate_hint)
             elif key in JUMP_KEYS and self.player:
                 keys = pygame.key.get_pressed()
                 if self.player.on_one_way and any(keys[k] for k in DOWN_KEYS):
                     self.player.drop_through()
                 else:
                     self.player.request_jump()
+        elif self.scene == "QUIZ":
+            self._quiz_key(key)
         elif self.scene == "PAUSED":
             if key in (pygame.K_ESCAPE, pygame.K_p):
                 self.handle_button_action("resume")
@@ -1637,6 +2213,29 @@ class Game:
                 self.start_game()
             elif key == pygame.K_ESCAPE:
                 self.change_scene("MENU")
+
+    def _quiz_key(self, key):
+        qz = self.quiz
+        if qz is None:
+            self.change_scene("PLAYING")
+            return
+        if qz["state"] != "ask":
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_e,
+                       pygame.K_ESCAPE):
+                self.close_quiz()
+            return
+        if key == pygame.K_ESCAPE:
+            self.close_quiz()
+        elif key in ANSWER_KEYS:
+            self.answer_quiz(ANSWER_KEYS.index(key))
+        elif key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_a, pygame.K_d):
+            qz["sel"] ^= 1
+            self.audio.play("click")
+        elif key in (pygame.K_UP, pygame.K_DOWN, pygame.K_w, pygame.K_s):
+            qz["sel"] ^= 2
+            self.audio.play("click")
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self.answer_quiz(qz["sel"])
 
     def quit(self):
         self._save()
